@@ -1,0 +1,6 @@
+{
+  "name": "Jujustu V3 — WinGo 1M Diablo Pattern Engine",
+  "description": "High-precision real-time WinGo 1M prediction dashboard and mathematical ensemble engine powered by @AJAYTREDERKING.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
