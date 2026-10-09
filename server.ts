@@ -260,7 +260,7 @@ async function stepConsoleLoop(mode: GameMode) {
 
       if (/^\d+$/.test(current_period)) {
         const next_period = (BigInt(current_period) + 1n).toString();
-        const activeLevel = Math.min(3, state.consecutive_losses + 1);
+        const activeLevel = (state.consecutive_losses % 3) + 1;
         const pyResult = await runPythonScriptEngineAsync(
           current_period,
           state.last_results_ints,

@@ -467,7 +467,7 @@ export default function App() {
 
         if (/^\d+$/.test(current_period)) {
           const next_period = (BigInt(current_period) + 1n).toString();
-          const activeLevel = Math.min(3, state.consecutive_losses + 1);
+          const activeLevel = (state.consecutive_losses % 3) + 1;
           const telemetry = diablo_detailed_telemetry(
             current_period,
             state.last_results_ints,
@@ -1469,11 +1469,11 @@ export default function App() {
                         <div className="hist-row-left">
                           <div className="hist-row-period">
                             <b>#{item.period.slice(-7)}</b>
-                            <span>L{item.level || 1} FIX</span>
+                            <span className="level-fix-tag">L{item.level || 1} FIX</span>
                             <span>{item.timestamp || 'Live'}</span>
                             {isJackpot && (
                               <span className="jackpot-match-tag">
-                                🎯 NUMBER MATCH #{safeSingle}
+                                🎯 MATCH #{safeSingle}
                               </span>
                             )}
                           </div>
@@ -1849,7 +1849,23 @@ export default function App() {
                   <div className="pattern-row">
                     <div>
                       <span className="t">
-                        ZigZag Pattern Detector (`zigzag_pattern_prediction` · 3.4x)
+                        Run-Length Survival Hazard (`run_length_hazard_prediction` · 3.1x)
+                      </span>
+                      <span className="s">
+                        Current Run: {latestTelemetry?.sub_engines.hazard?.curr_len ?? 1} · Continue:{' '}
+                        {latestTelemetry?.sub_engines.hazard?.continue_w ?? 0} vs Break:{' '}
+                        {latestTelemetry?.sub_engines.hazard?.break_w ?? 0}
+                      </span>
+                    </div>
+                    <span className="m amber">
+                      {latestTelemetry?.sub_engines.hazard?.pred ?? predSize}
+                    </span>
+                  </div>
+
+                  <div className="pattern-row">
+                    <div>
+                      <span className="t">
+                        ZigZag Pattern Detector (`zigzag_pattern_prediction` · 3.3x)
                       </span>
                       <span className="s">
                         Mode: {latestTelemetry?.sub_engines.zigzag?.type ?? 'NONE'} (1x1 / 2x2 / 2x1 · Alternations:{' '}
@@ -2194,11 +2210,11 @@ export default function App() {
                         <div className="hist-row-left">
                           <div className="hist-row-period">
                             <b>#{item.period}</b>
-                            <span>L{item.level || 1} FIX</span>
+                            <span className="level-fix-tag">L{item.level || 1} FIX</span>
                             <span>{item.timestamp || 'Live'}</span>
                             {isJackpot && (
                               <span className="jackpot-match-tag">
-                                🎯 NUMBER MATCH #{safeSingle}
+                                🎯 MATCH #{safeSingle}
                               </span>
                             )}
                           </div>

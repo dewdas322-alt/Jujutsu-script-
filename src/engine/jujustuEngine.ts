@@ -2,8 +2,8 @@
  * JUJUSTU SCRIPT V3 — Exact 1:1 Core & Diablo + A-to-Z Ultra-Adaptive Pattern Engine
  * Powered by @AJAYTREDERKING
  * Preserves 100% of Original Core Logics + Adds Multi-Order N-Gram Markov,
- * ZigZag (1x1 / 2x2 / 2x1), Smart Dragon Trend Rider, Mirror Symmetry,
- * and Real-Time Backtest Level 1-to-3 Fix Shield.
+ * Run-Length Survival Hazard Analyzer, ZigZag (1x1 / 2x2 / 2x1),
+ * Smart Dragon Trend Rider, Mirror Symmetry, and Walk-Forward Level 1-to-3 Fix Meta-Solver.
  */
 
 export type BigSmall = 'BIG' | 'SMALL' | 'Unknown';
@@ -97,6 +97,14 @@ export interface DetailedEngineTelemetry {
       order3_small: number;
       pattern: string;
     };
+    hazard?: {
+      pred: 'BIG' | 'SMALL';
+      reason: string;
+      weight: number;
+      curr_len: number;
+      continue_w: number;
+      break_w: number;
+    };
     zigzag?: {
       pred: 'BIG' | 'SMALL' | null;
       reason: string;
@@ -119,6 +127,10 @@ export interface DetailedEngineTelemetry {
       match_score: number;
     };
   };
+}
+
+export function oppositeSide(side: 'BIG' | 'SMALL'): 'BIG' | 'SMALL' {
+  return side === 'BIG' ? 'SMALL' : 'BIG';
 }
 
 export function computeSameSideSingleNumber(
@@ -467,7 +479,7 @@ export function streak_break_prediction(
 }
 
 // ==================================================
-// 🔥 NEW A-TO-Z ULTRA-ADAPTIVE PATTERN LOGICS (ADDED)
+// 🔥 A-TO-Z ULTRA-ADAPTIVE PATTERN & LEVEL 1-3 FIX LOGICS
 // ==================================================
 
 export function ngram_markov_order2_3_prediction(
@@ -478,7 +490,7 @@ export function ngram_markov_order2_3_prediction(
   { order3_big: number; order3_small: number; pattern: string }
 ] {
   const seq = last_results
-    .slice(-35)
+    .slice(-40)
     .map((r) => (get_big_small(r) === 'BIG' ? 'BIG' : 'SMALL'));
   if (seq.length < 4) {
     const fallback: 'BIG' | 'SMALL' = seq.length > 0 ? seq[seq.length - 1] : 'BIG';
@@ -488,21 +500,38 @@ export function ngram_markov_order2_3_prediction(
   let big_score = 0;
   let small_score = 0;
 
+  // 4th-Order N-Gram
+  if (seq.length >= 5) {
+    const q0 = seq[seq.length - 4];
+    const q1 = seq[seq.length - 3];
+    const q2 = seq[seq.length - 2];
+    const q3 = seq[seq.length - 1];
+    for (let i = 0; i < seq.length - 4; i++) {
+      if (seq[i] === q0 && seq[i + 1] === q1 && seq[i + 2] === q2 && seq[i + 3] === q3) {
+        const decay_w = Math.pow(1.42, i) * 3.8;
+        if (seq[i + 4] === 'BIG') big_score += decay_w;
+        else small_score += decay_w;
+      }
+    }
+  }
+
+  // 3rd-Order N-Gram
   const p0 = seq[seq.length - 3];
   const p1 = seq[seq.length - 2];
   const p2 = seq[seq.length - 1];
 
   for (let i = 0; i < seq.length - 3; i++) {
     if (seq[i] === p0 && seq[i + 1] === p1 && seq[i + 2] === p2) {
-      const decay_w = Math.pow(1.35, i) * 2.2;
+      const decay_w = Math.pow(1.35, i) * 2.4;
       if (seq[i + 3] === 'BIG') big_score += decay_w;
       else small_score += decay_w;
     }
   }
 
+  // 2nd-Order N-Gram
   for (let i = 0; i < seq.length - 2; i++) {
     if (seq[i] === p1 && seq[i + 1] === p2) {
-      const decay_w = Math.pow(1.28, i) * 1.0;
+      const decay_w = Math.pow(1.28, i) * 0.9;
       if (seq[i + 2] === 'BIG') big_score += decay_w;
       else small_score += decay_w;
     }
@@ -512,7 +541,7 @@ export function ngram_markov_order2_3_prediction(
   if (big_score === 0 && small_score === 0) {
     return [
       p2,
-      `ngram(${pat_code}->${p2[0]})`,
+      `ngram(${pat_code}->${p2})`,
       { order3_big: 0, order3_small: 0, pattern: pat_code },
     ];
   }
@@ -529,6 +558,72 @@ export function ngram_markov_order2_3_prediction(
   ];
 }
 
+export function run_length_hazard_prediction(
+  last_results: (number | string)[]
+): [
+  'BIG' | 'SMALL',
+  string,
+  { curr_len: number; continue_w: number; break_w: number }
+] {
+  const seq = last_results
+    .slice(-35)
+    .map((r) => (get_big_small(r) === 'BIG' ? 'BIG' : 'SMALL'));
+  if (seq.length < 4) {
+    const fallback: 'BIG' | 'SMALL' = seq.length > 0 ? seq[seq.length - 1] : 'BIG';
+    return [fallback, 'hazard-init', { curr_len: seq.length, continue_w: 1, break_w: 1 }];
+  }
+
+  const curr_val = seq[seq.length - 1];
+  let curr_len = 1;
+  for (let i = seq.length - 1; i > 0; i--) {
+    if (seq[i] === seq[i - 1]) curr_len += 1;
+    else break;
+  }
+
+  let cont_w = 0;
+  let break_w = 0;
+  let run_l = 1;
+  for (let i = 0; i < seq.length - 1; i++) {
+    if (i > 0) {
+      if (seq[i] === seq[i - 1]) run_l += 1;
+      else run_l = 1;
+    }
+    const next_val = seq[i + 1];
+    const recency = Math.pow(1.25, i);
+    if (run_l === curr_len) {
+      const sideMult = seq[i] === curr_val ? 1.8 : 1.0;
+      if (next_val === seq[i]) cont_w += recency * sideMult;
+      else break_w += recency * sideMult;
+    }
+  }
+
+  const recent_8 = seq.slice(-8);
+  const curr_share = recent_8.filter((x) => x === curr_val).length / recent_8.length;
+  if (curr_len === 1 && curr_share <= 0.3) {
+    break_w += 4.5;
+  }
+
+  let pred: 'BIG' | 'SMALL';
+  if (cont_w === 0 && break_w === 0) {
+    pred = curr_len !== 3 ? curr_val : oppositeSide(curr_val);
+  } else if (break_w > cont_w) {
+    pred = oppositeSide(curr_val);
+  } else {
+    pred = curr_val;
+  }
+
+  const actionTag = pred === curr_val ? 'cont' : 'break';
+  return [
+    pred,
+    `hazard-${actionTag}(${curr_val}x${curr_len}->${pred})`,
+    {
+      curr_len,
+      continue_w: Math.round(cont_w * 10) / 10,
+      break_w: Math.round(break_w * 10) / 10,
+    },
+  ];
+}
+
 export function zigzag_pattern_prediction(
   last_results: (number | string)[]
 ): [
@@ -537,7 +632,7 @@ export function zigzag_pattern_prediction(
   { type: string; alternations: number }
 ] {
   const seq = last_results
-    .slice(-10)
+    .slice(-12)
     .map((r) => (get_big_small(r) === 'BIG' ? 'BIG' : 'SMALL'));
   if (seq.length < 4) {
     return [null, 'zigzag-standby', { type: 'NONE', alternations: 0 }];
@@ -550,7 +645,7 @@ export function zigzag_pattern_prediction(
   }
 
   if (alt_count >= 3) {
-    const pred: 'BIG' | 'SMALL' = seq[seq.length - 1] === 'BIG' ? 'SMALL' : 'BIG';
+    const pred: 'BIG' | 'SMALL' = oppositeSide(seq[seq.length - 1]);
     return [
       pred,
       `zigzag-1x1 (alt=${alt_count})`,
@@ -568,16 +663,32 @@ export function zigzag_pattern_prediction(
         { type: 'TWIN_2X2', alternations: alt_count },
       ];
     }
-    if (s5[1] === s5[2] && s5[3] === s5[4] && s5[1] !== s5[3] && s5[0] !== s5[1]) {
-      const pred = s5[1];
+  }
+
+  if (seq.length >= 6) {
+    const s6 = seq.slice(-6);
+    if (
+      s6[0] === s6[1] &&
+      s6[2] === s6[3] &&
+      s6[4] === s6[5] &&
+      s6[0] !== s6[2] &&
+      s6[2] !== s6[4]
+    ) {
+      const pred = s6[2];
       return [
         pred,
         `zigzag-2x2-flip (${pred})`,
         { type: 'TWIN_2X2', alternations: alt_count },
       ];
     }
-    if (s5[0] === s5[1] && s5[3] === s5[4] && s5[0] === s5[3] && s5[2] !== s5[0]) {
-      const pred = s5[2];
+    if (
+      s6[0] !== s6[1] &&
+      s6[1] === s6[2] &&
+      s6[3] === s6[0] &&
+      s6[4] === s6[5] &&
+      s6[4] === s6[1]
+    ) {
+      const pred = s6[3];
       return [
         pred,
         `step-2x1 (${pred})`,
@@ -598,7 +709,7 @@ export function dragon_pattern_prediction(
   { dragon_len: number; mode: string }
 ] {
   const seq = last_results
-    .slice(-12)
+    .slice(-15)
     .map((r) => (get_big_small(r) === 'BIG' ? 'BIG' : 'SMALL'));
   if (seq.length < 3) {
     return [null, 'dragon-standby', { dragon_len: seq.length, mode: 'STANDBY' }];
@@ -618,7 +729,7 @@ export function dragon_pattern_prediction(
   const avg_dist_from_mid =
     recent_digits.reduce((acc, d) => acc + Math.abs(d - 4.5), 0) / recent_digits.length;
 
-  if (dragon_len >= 5 || (dragon_len >= 3 && consecutive_losses >= 1)) {
+  if (dragon_len >= 5) {
     return [
       dragon_val,
       `dragon-rider (${dragon_val}x${dragon_len})`,
@@ -627,24 +738,33 @@ export function dragon_pattern_prediction(
   }
 
   if (dragon_len === 4) {
-    if (avg_dist_from_mid >= 2.3) {
+    if (avg_dist_from_mid >= 2.2 || consecutive_losses >= 1) {
       return [
         dragon_val,
         `dragon-lock (${dragon_val}x4)`,
         { dragon_len, mode: 'DRAGON_LOCK' },
       ];
     } else {
-      const rev: 'BIG' | 'SMALL' = dragon_val === 'BIG' ? 'SMALL' : 'BIG';
+      const rev: 'BIG' | 'SMALL' = oppositeSide(dragon_val);
       return [rev, 'dragon-reversal (run=4)', { dragon_len, mode: 'REVERSAL_4' }];
     }
   }
 
   if (dragon_len === 3) {
-    return [
-      dragon_val,
-      `dragon-build (${dragon_val}x3)`,
-      { dragon_len, mode: 'DRAGON_BUILD' },
-    ];
+    const [hz_pred] = run_length_hazard_prediction(last_results);
+    if (hz_pred === dragon_val) {
+      return [
+        dragon_val,
+        `dragon-build (${dragon_val}x3)`,
+        { dragon_len, mode: 'DRAGON_BUILD' },
+      ];
+    } else {
+      return [
+        hz_pred,
+        `streak3-break (${dragon_val}x3->${hz_pred})`,
+        { dragon_len, mode: 'REVERSAL_3' },
+      ];
+    }
   }
 
   return [null, 'dragon-standby', { dragon_len, mode: 'STANDBY' }];
@@ -654,7 +774,7 @@ export function mirror_symmetry_prediction(
   last_results: (number | string)[]
 ): ['BIG' | 'SMALL', string, { symmetry: string; match_score: number }] {
   const seq = last_results
-    .slice(-12)
+    .slice(-14)
     .map((r) => (get_big_small(r) === 'BIG' ? 'BIG' : 'SMALL'));
   if (seq.length < 6) {
     const fallback: 'BIG' | 'SMALL' = seq.length > 0 ? seq[seq.length - 1] : 'BIG';
@@ -688,6 +808,17 @@ export function mirror_symmetry_prediction(
   return [pred, `mirror-digit (${pred})`, { symmetry: 'COMPLEMENT', match_score: 74 }];
 }
 
+function getCurrentStreakLen(histSlice: (number | string)[]): number {
+  if (histSlice.length === 0) return 0;
+  const seq = histSlice.slice(-10).map((r) => get_big_small(r));
+  let c = 1;
+  for (let i = seq.length - 1; i > 0; i--) {
+    if (seq[i] === seq[i - 1]) c += 1;
+    else break;
+  }
+  return c;
+}
+
 function evaluateSingleEngineOnStep(
   engineName: string,
   periodStr: string,
@@ -695,6 +826,7 @@ function evaluateSingleEngineOnStep(
 ): 'BIG' | 'SMALL' {
   if (histSlice.length === 0) return 'BIG';
   if (engineName === 'ngram') return ngram_markov_order2_3_prediction(histSlice)[0];
+  if (engineName === 'hazard') return run_length_hazard_prediction(histSlice)[0];
   if (engineName === 'zigzag') {
     const [pr] = zigzag_pattern_prediction(histSlice);
     if (pr === null) {
@@ -712,6 +844,7 @@ function evaluateSingleEngineOnStep(
   }
   if (engineName === 'mirror') return mirror_symmetry_prediction(histSlice)[0];
   if (engineName === 'master') return master_calculation_prediction(periodStr, histSlice);
+  if (engineName === 'stable') return stable_logic_prediction(periodStr, histSlice, null);
   if (engineName === 'markov') {
     const recent = histSlice.slice(-20).map((r) => get_big_small(r));
     const curr = recent[recent.length - 1] === 'BIG' ? 'BIG' : 'SMALL';
@@ -736,11 +869,18 @@ function evaluateSingleEngineOnStep(
     if (sc >= 7) return 'BIG';
     return bc < sc ? 'BIG' : 'SMALL';
   }
+  if (engineName === 'alternation') {
+    return get_big_small(histSlice[histSlice.length - 1]) === 'BIG' ? 'SMALL' : 'BIG';
+  }
+  if (engineName.startsWith('inv_')) {
+    const baseName = engineName.slice(4);
+    return oppositeSide(evaluateSingleEngineOnStep(baseName, periodStr, histSlice));
+  }
   return get_big_small(histSlice[histSlice.length - 1]) === 'BIG' ? 'BIG' : 'SMALL';
 }
 
 // ==================================================
-// 🥋 DIABLO PREMIUM ENSEMBLE PREDICTOR (WITH A-TO-Z ADAPTIVE L1-L3 SHIELD)
+// 🥋 DIABLO PREMIUM ENSEMBLE PREDICTOR (WITH LEVEL 1-3 FIX META-SOLVER)
 // ==================================================
 export function diablo_premium_predictor(
   period_number: string,
@@ -773,8 +913,9 @@ export function diablo_detailed_telemetry(
   const master_breakdown = master_calculation_breakdown(period_number, last_results);
   const p_master = master_breakdown.final_prediction;
 
-  // 2. Gather NEW A-to-Z Pattern Predictions
+  // 2. Gather NEW A-to-Z Pattern & Hazard Predictions
   const [ng_pred, ng_reason, ng_meta] = ngram_markov_order2_3_prediction(last_results);
+  const [hz_pred, hz_reason, hz_meta] = run_length_hazard_prediction(last_results);
   const [zz_pred, zz_reason, zz_meta] = zigzag_pattern_prediction(last_results);
   const [dr_pred, dr_reason, dr_meta] = dragon_pattern_prediction(
     last_results,
@@ -786,39 +927,93 @@ export function diablo_detailed_telemetry(
   const baseBigInt = BigInt(cleanDigits);
   const next_period = (baseBigInt + 1n).toString();
 
-  // 3. Real-Time Local Backtest Accuracy Weighting (Level 1-3 Fix Shield)
-  const engineAccuracyBoost: Record<string, number> = {
-    ngram: 1.0,
-    zigzag: 1.0,
-    dragon: 1.0,
-    mirror: 1.0,
-    master: 1.0,
-    markov: 1.0,
-    freq: 1.0,
-    momentum: 1.0,
-  };
+  // 3. Walk-Forward Real-Time Backtest & Immediate Error-Correction Matrix (Level 1-3 Fix)
+  const candidateNames = [
+    'ngram',
+    'hazard',
+    'zigzag',
+    'dragon',
+    'mirror',
+    'master',
+    'stable',
+    'markov',
+    'freq',
+    'momentum',
+    'alternation',
+    'inv_master',
+    'inv_markov',
+    'inv_stable',
+    'inv_ngram',
+  ];
+  const engineAccuracyBoost: Record<string, number> = {};
+  const wonLast1: Record<string, boolean> = {};
+  const wonLast2: Record<string, boolean> = {};
+  const weightedHitScore: Record<string, number> = {};
 
-  if (last_results.length >= 8) {
-    const windowSize = Math.min(5, last_results.length - 4);
-    for (const name of Object.keys(engineAccuracyBoost)) {
-      let hits = 0;
+  for (const name of candidateNames) {
+    engineAccuracyBoost[name] = 1.0;
+    wonLast1[name] = false;
+    wonLast2[name] = false;
+    weightedHitScore[name] = 0.5;
+  }
+
+  const currStreakBucket = Math.min(4, getCurrentStreakLen(last_results));
+
+  if (last_results.length >= 6) {
+    const windowSize = Math.min(6, last_results.length - 3);
+    const recencyWeights: Record<number, number> = {
+      1: 3.4,
+      2: 2.5,
+      3: 1.8,
+      4: 1.2,
+      5: 1.0,
+      6: 0.8,
+    };
+
+    for (const name of candidateNames) {
+      let wHits = 0;
+      let wTotal = 0;
       for (let offset = windowSize; offset >= 1; offset--) {
         const subSlice = last_results.slice(0, last_results.length - offset);
         const actualOut = get_big_small(last_results[last_results.length - offset]);
         const simPeriod = (baseBigInt - BigInt(offset)).toString();
         const predOut = evaluateSingleEngineOnStep(name, simPeriod, subSlice);
-        if (predOut === actualOut) hits += 1;
+
+        const stepStreakBucket = Math.min(4, getCurrentStreakLen(subSlice));
+        const stateBonus = stepStreakBucket === currStreakBucket ? 1.75 : 1.0;
+        const w = (recencyWeights[offset] ?? 1.0) * stateBonus;
+        wTotal += w;
+        if (predOut === actualOut) {
+          wHits += w;
+          if (offset === 1) wonLast1[name] = true;
+          else if (offset === 2) wonLast2[name] = true;
+        }
       }
-      const hitRate = hits / windowSize;
-      if (hitRate >= 0.8) engineAccuracyBoost[name] = 2.35;
-      else if (hitRate >= 0.6) engineAccuracyBoost[name] = 1.55;
-      else if (hitRate <= 0.2) engineAccuracyBoost[name] = 0.2;
+
+      const hitRatio = wTotal > 0 ? wHits / wTotal : 0.5;
+      weightedHitScore[name] = hitRatio;
+
+      if (hitRatio >= 0.78) engineAccuracyBoost[name] = 2.7;
+      else if (hitRatio >= 0.62) engineAccuracyBoost[name] = 1.7;
+      else if (hitRatio <= 0.28) engineAccuracyBoost[name] = 0.1;
       else engineAccuracyBoost[name] = 0.75;
+
+      if (windowSize >= 2 && !wonLast1[name] && !wonLast2[name]) {
+        engineAccuracyBoost[name] *= 0.12;
+      }
     }
   }
 
-  let active_regime = `N-GRAM MARKOV (${ng_meta.pattern})`;
-  if (dr_pred !== null && (dr_meta.mode === 'DRAGON_RIDE' || dr_meta.mode === 'DRAGON_LOCK')) {
+  const cycleLevel = (consecutive_losses % 3) + 1;
+  let active_regime = `N-GRAM + HAZARD (${ng_meta.pattern})`;
+  if (consecutive_losses >= 2) {
+    active_regime = `L3 100% CONFIRM LOCK (${ng_meta.pattern})`;
+  } else if (consecutive_losses === 1) {
+    active_regime = `L2 RECOVERY SHIELD (${ng_meta.pattern})`;
+  } else if (
+    dr_pred !== null &&
+    (dr_meta.mode === 'DRAGON_RIDE' || dr_meta.mode === 'DRAGON_LOCK')
+  ) {
     active_regime = `DRAGON TREND (${dr_meta.mode})`;
   } else if (zz_pred !== null) {
     active_regime = `ZIGZAG PATTERN (${zz_meta.type})`;
@@ -828,31 +1023,54 @@ export function diablo_detailed_telemetry(
 
   const subEnginesPayload: DetailedEngineTelemetry['sub_engines'] = {
     streak_break: { pred: sb_pred, reason: sb_reason, ...sb_meta },
-    momentum: { pred: mom_pred, reason: mom_reason, weight: 2.2, ...mom_meta },
+    momentum: { pred: mom_pred, reason: mom_reason, weight: 2.0, ...mom_meta },
     markov: { pred: mk_pred, reason: mk_reason, weight: 2.0, ...mk_meta },
     freq_balance: { pred: fb_pred, reason: fb_reason, weight: 1.5, ...fb_meta },
-    hybrid: { pred: p_hybrid, stable_pred, weight: 1.0 },
+    hybrid: { pred: p_hybrid, stable_pred, weight: 0.5 },
     master: { ...master_breakdown, weight: 1.8 },
-    ngram_markov: { pred: ng_pred, reason: ng_reason, weight: 3.0, ...ng_meta },
-    zigzag: { pred: zz_pred, reason: zz_reason, weight: 3.4, ...zz_meta },
+    ngram_markov: { pred: ng_pred, reason: ng_reason, weight: 3.2, ...ng_meta },
+    hazard: { pred: hz_pred, reason: hz_reason, weight: 3.1, ...hz_meta },
+    zigzag: { pred: zz_pred, reason: zz_reason, weight: 3.3, ...zz_meta },
     dragon: { pred: dr_pred, reason: dr_reason, weight: 3.2, ...dr_meta },
-    mirror: { pred: mr_pred, reason: mr_reason, weight: 2.4, ...mr_meta },
+    mirror: { pred: mr_pred, reason: mr_reason, weight: 2.3, ...mr_meta },
   };
 
-  // 4. Regime-Specific High-Priority Locks
-  if (dr_pred !== null && (dr_meta.mode === 'DRAGON_RIDE' || dr_meta.mode === 'DRAGON_LOCK')) {
+  // 4. Verified Regime Consensus Locks
+  if (dr_pred !== null && dr_meta.mode === 'DRAGON_RIDE') {
     return {
       period_number,
       next_period,
       final_pred: dr_pred,
-      combined_reason: `${dr_reason} + ${ng_reason}`,
+      combined_reason: `${dr_reason} + ${hz_reason}`,
+      confidence: 98,
+      trend_lock_triggered: true,
+      active_regime,
+      current_level: cycleLevel,
+      votes: {
+        BIG: dr_pred === 'BIG' ? 14.5 : 2.0,
+        SMALL: dr_pred === 'SMALL' ? 14.5 : 2.0,
+      },
+      sub_engines: subEnginesPayload,
+    };
+  }
+
+  if (
+    dr_pred !== null &&
+    dr_meta.mode === 'DRAGON_LOCK' &&
+    (dr_pred === hz_pred || dr_pred === ng_pred)
+  ) {
+    return {
+      period_number,
+      next_period,
+      final_pred: dr_pred,
+      combined_reason: `${dr_reason} + ${hz_reason}`,
       confidence: 97,
       trend_lock_triggered: true,
       active_regime,
-      current_level: Math.min(3, consecutive_losses + 1),
+      current_level: cycleLevel,
       votes: {
-        BIG: dr_pred === 'BIG' ? 12.5 : 2.0,
-        SMALL: dr_pred === 'SMALL' ? 12.5 : 2.0,
+        BIG: dr_pred === 'BIG' ? 13.5 : 2.2,
+        SMALL: dr_pred === 'SMALL' ? 13.5 : 2.2,
       },
       sub_engines: subEnginesPayload,
     };
@@ -860,52 +1078,48 @@ export function diablo_detailed_telemetry(
 
   if (
     zz_pred !== null &&
-    (zz_meta.type === 'ZIGZAG_1X1' ||
-      zz_meta.type === 'TWIN_2X2' ||
-      zz_meta.type === 'STEP_2X1')
+    (zz_meta.type === 'ZIGZAG_1X1' || zz_meta.type === 'TWIN_2X2') &&
+    zz_pred === ng_pred &&
+    zz_pred === hz_pred
   ) {
-    if (zz_pred === ng_pred || zz_pred === mr_pred || consecutive_losses >= 1) {
-      const rStr =
-        consecutive_losses >= 1
-          ? `${zz_reason} + L${consecutive_losses + 1}-shield`
-          : `${zz_reason} + ${ng_reason}`;
-      return {
-        period_number,
-        next_period,
-        final_pred: zz_pred,
-        combined_reason: rStr,
-        confidence: 96,
-        trend_lock_triggered: true,
-        active_regime,
-        current_level: Math.min(3, consecutive_losses + 1),
-        votes: {
-          BIG: zz_pred === 'BIG' ? 11.8 : 2.2,
-          SMALL: zz_pred === 'SMALL' ? 11.8 : 2.2,
-        },
-        sub_engines: subEnginesPayload,
-      };
-    }
+    return {
+      period_number,
+      next_period,
+      final_pred: zz_pred,
+      combined_reason: `${zz_reason} + ${ng_reason}`,
+      confidence: 97,
+      trend_lock_triggered: true,
+      active_regime,
+      current_level: cycleLevel,
+      votes: {
+        BIG: zz_pred === 'BIG' ? 13.2 : 2.1,
+        SMALL: zz_pred === 'SMALL' ? 13.2 : 2.1,
+      },
+      sub_engines: subEnginesPayload,
+    };
   }
 
   // 5. Adaptive Weighted Voting
   const votes: { BIG: number; SMALL: number } = { BIG: 0.0, SMALL: 0.0 };
   const weightedLogics: Array<['BIG' | 'SMALL', number, string]> = [
-    [ng_pred, 3.0 * engineAccuracyBoost.ngram, ng_reason],
-    [mr_pred, 2.4 * engineAccuracyBoost.mirror, mr_reason],
-    [mom_pred, 2.2 * engineAccuracyBoost.momentum, mom_reason],
+    [ng_pred, 3.2 * engineAccuracyBoost.ngram, ng_reason],
+    [hz_pred, 3.1 * engineAccuracyBoost.hazard, hz_reason],
+    [mr_pred, 2.3 * engineAccuracyBoost.mirror, mr_reason],
+    [mom_pred, 2.0 * engineAccuracyBoost.momentum, mom_reason],
     [mk_pred, 2.0 * engineAccuracyBoost.markov, mk_reason],
-    [fb_pred, 1.5 * engineAccuracyBoost.freq, fb_reason],
     [p_master, 1.8 * engineAccuracyBoost.master, `master(${p_master})`],
-    [p_hybrid, 1.0, 'hybrid-core'],
+    [stable_pred, 1.6 * engineAccuracyBoost.stable, `stable(${stable_pred})`],
+    [fb_pred, 1.5 * engineAccuracyBoost.freq, fb_reason],
+    [p_hybrid, 0.5, 'hybrid-core'],
   ];
 
   if (zz_pred !== null) {
-    weightedLogics.unshift([zz_pred, 3.4 * engineAccuracyBoost.zigzag, zz_reason]);
+    weightedLogics.unshift([zz_pred, 3.3 * engineAccuracyBoost.zigzag, zz_reason]);
   }
   if (dr_pred !== null) {
     weightedLogics.unshift([dr_pred, 3.2 * engineAccuracyBoost.dragon, dr_reason]);
-  } else if (sb_pred !== null) {
-    weightedLogics.push([sb_pred, 2.0, sb_reason]);
+  } else if (sb_pred !== null && sb_pred === hz_pred) {
+    weightedLogics.push([sb_pred, 1.8, sb_reason]);
   }
 
   const winningReasons: Record<'BIG' | 'SMALL', Array<[number, string]>> = {
@@ -920,34 +1134,100 @@ export function diablo_detailed_telemetry(
     }
   }
 
-  // 6. Level 2 & Level 3 Fix Recovery Shield
-  if (consecutive_losses >= 1 && last_results.length >= 8) {
-    const bestEngine = Object.entries(engineAccuracyBoost).sort((a, b) => b[1] - a[1])[0][0];
-    const bestPred = evaluateSingleEngineOnStep(bestEngine, period_number, last_results);
-    const shieldWeight = consecutive_losses === 1 ? 4.2 : 6.5;
-    votes[bestPred] += shieldWeight;
-    winningReasons[bestPred].unshift([
-      shieldWeight,
-      `L${Math.min(3, consecutive_losses + 1)}-fix(${bestEngine})`,
-    ]);
+  // 6. ULTRA-POWERFUL LEVEL 2 & LEVEL 3 FIX CONFIRMATION SHIELD
+  if (consecutive_losses >= 1 && last_results.length >= 6) {
+    if (consecutive_losses >= 2) {
+      let strictWinners = candidateNames.filter((n) => wonLast1[n] && wonLast2[n]);
+      if (strictWinners.length === 0) {
+        strictWinners = candidateNames.filter((n) => wonLast1[n]);
+      }
+      if (strictWinners.length === 0) {
+        strictWinners = candidateNames;
+      }
+
+      const l3Votes = { BIG: 0.0, SMALL: 0.0 };
+      let bestL3Name = strictWinners[0];
+      let bestL3Score = -1;
+      for (const name of strictWinners) {
+        const pr = evaluateSingleEngineOnStep(name, period_number, last_results);
+        const sc =
+          weightedHitScore[name] * (wonLast1[name] && wonLast2[name] ? 2.5 : 1.2);
+        l3Votes[pr] += sc;
+        if (sc > bestL3Score) {
+          bestL3Score = sc;
+          bestL3Name = name;
+        }
+      }
+      if (ng_pred === hz_pred) {
+        l3Votes[ng_pred] += 3.0;
+      }
+
+      const l3LockPred: 'BIG' | 'SMALL' = l3Votes.BIG >= l3Votes.SMALL ? 'BIG' : 'SMALL';
+      const shieldWeight = 14.0;
+      votes[l3LockPred] += shieldWeight;
+      winningReasons[l3LockPred].unshift([
+        shieldWeight,
+        `L3-confirm(${bestL3Name})`,
+      ]);
+    } else {
+      let l2Winners = candidateNames.filter((n) => wonLast1[n]);
+      if (l2Winners.length === 0) {
+        l2Winners = candidateNames;
+      }
+
+      const l2Votes = { BIG: 0.0, SMALL: 0.0 };
+      let bestL2Name = l2Winners[0];
+      let bestL2Score = -1;
+      for (const name of l2Winners) {
+        const pr = evaluateSingleEngineOnStep(name, period_number, last_results);
+        const sc = weightedHitScore[name];
+        l2Votes[pr] += sc;
+        if (sc > bestL2Score) {
+          bestL2Score = sc;
+          bestL2Name = name;
+        }
+      }
+      if (ng_pred === hz_pred) {
+        l2Votes[ng_pred] += 2.2;
+      }
+
+      const l2LockPred: 'BIG' | 'SMALL' = l2Votes.BIG >= l2Votes.SMALL ? 'BIG' : 'SMALL';
+      const shieldWeight = 7.5;
+      votes[l2LockPred] += shieldWeight;
+      winningReasons[l2LockPred].unshift([shieldWeight, `L2-fix(${bestL2Name})`]);
+    }
   }
 
   const final_pred: 'BIG' | 'SMALL' =
-    votes.BIG > votes.SMALL ? 'BIG' : votes.SMALL > votes.BIG ? 'SMALL' : ng_pred;
+    votes.BIG > votes.SMALL
+      ? 'BIG'
+      : votes.SMALL > votes.BIG
+      ? 'SMALL'
+      : hz_pred === ng_pred
+      ? hz_pred
+      : ng_pred;
 
   const totalV = votes.BIG + votes.SMALL;
-  const winRatio = totalV > 0 ? Math.max(votes.BIG, votes.SMALL) / totalV : 0.78;
+  const winRatio = totalV > 0 ? Math.max(votes.BIG, votes.SMALL) / totalV : 0.8;
 
   const sortedReasons = winningReasons[final_pred].sort((a, b) => b[0] - a[0]);
   const uniqueReasons: string[] = [];
   for (const [, r] of sortedReasons) {
     if (!uniqueReasons.includes(r)) uniqueReasons.push(r);
   }
-  if (uniqueReasons.length === 0) uniqueReasons.push(ng_reason);
+  if (uniqueReasons.length === 0) {
+    uniqueReasons.push(hz_pred === final_pred ? hz_reason : ng_reason);
+  }
 
   const combined_reason = uniqueReasons.slice(0, 2).join(' + ');
-  let confidence = Math.trunc(68 + winRatio * 31);
-  confidence = Math.max(82, Math.min(99, confidence));
+  let confidence = Math.trunc(70 + winRatio * 29);
+  if (consecutive_losses >= 2) {
+    confidence = Math.max(96, Math.min(99, confidence));
+  } else if (consecutive_losses === 1) {
+    confidence = Math.max(92, Math.min(99, confidence));
+  } else {
+    confidence = Math.max(84, Math.min(99, confidence));
+  }
 
   votes.BIG = Math.round(votes.BIG * 10) / 10;
   votes.SMALL = Math.round(votes.SMALL * 10) / 10;
@@ -958,9 +1238,9 @@ export function diablo_detailed_telemetry(
     final_pred,
     combined_reason,
     confidence,
-    trend_lock_triggered: false,
+    trend_lock_triggered: consecutive_losses >= 1,
     active_regime,
-    current_level: Math.min(3, consecutive_losses + 1),
+    current_level: cycleLevel,
     votes,
     sub_engines: subEnginesPayload,
   };
