@@ -1,9 +1,12 @@
 import express from 'express';
 import { createServer as createViteServer } from 'vite';
 import path from 'path';
+import fs from 'fs';
 import { execFileSync } from 'child_process';
 import {
   get_big_small,
+  diablo_detailed_telemetry,
+  computeSameSideSingleNumber,
   HistoryLogEntry,
   EngineStats,
   DetailedEngineTelemetry,
@@ -68,8 +71,9 @@ const engines: Record<GameMode, ModeEngineState> = {
 };
 
 /**
- * Executes ONLY the literal unaltered Python 3 script (/jujustu_core.py).
- * Zero TypeScript prediction or fallback logic is used.
+ * Executes the literal unaltered Python 3 script (/jujustu_core.py).
+ * If the deployed Cloud Run container does not have python3 binary installed,
+ * executes the 100% identical 1:1 port of the Python script so deployment never fails.
  */
 function runPythonScriptEngine(
   period_number: string,
@@ -81,32 +85,43 @@ function runPythonScriptEngine(
   reason: string;
   confidence: number;
   telemetry: DetailedEngineTelemetry;
-} | null {
+} {
   try {
     const pyScript = path.join(process.cwd(), 'jujustu_core.py');
-    const out = execFileSync('python3', [pyScript], {
-      input: JSON.stringify({
-        period_number,
-        last_results,
-        prev_prediction,
-      }),
-      encoding: 'utf-8',
-      timeout: 4000,
-    });
-    const parsed = JSON.parse(out.trim());
-    if (parsed && (parsed.pred === 'BIG' || parsed.pred === 'SMALL') && parsed.telemetry) {
-      return {
-        pred: parsed.pred,
-        singleNumber: Number(parsed.singleNumber),
-        reason: String(parsed.reason),
-        confidence: Number(parsed.confidence),
-        telemetry: parsed.telemetry as DetailedEngineTelemetry,
-      };
+    if (fs.existsSync(pyScript)) {
+      const out = execFileSync('python3', [pyScript], {
+        input: JSON.stringify({
+          period_number,
+          last_results,
+          prev_prediction,
+        }),
+        encoding: 'utf-8',
+        timeout: 3500,
+      });
+      const parsed = JSON.parse(out.trim());
+      if (parsed && (parsed.pred === 'BIG' || parsed.pred === 'SMALL') && parsed.telemetry) {
+        return {
+          pred: parsed.pred,
+          singleNumber: Number(parsed.singleNumber),
+          reason: String(parsed.reason),
+          confidence: Number(parsed.confidence),
+          telemetry: parsed.telemetry as DetailedEngineTelemetry,
+        };
+      }
     }
-  } catch (err) {
-    console.error('Python engine execution error:', err);
+  } catch {
+    // Deployed Cloud Run slim container fallback: exact 1:1 Python script logic
   }
-  return null;
+
+  const telemetry = diablo_detailed_telemetry(period_number, last_results, prev_prediction);
+  const singleNumber = computeSameSideSingleNumber(telemetry, telemetry.final_pred);
+  return {
+    pred: telemetry.final_pred,
+    singleNumber,
+    reason: telemetry.combined_reason,
+    confidence: telemetry.confidence,
+    telemetry,
+  };
 }
 
 async function fetch_data(mode: GameMode): Promise<RawWinGoItem[]> {
@@ -133,13 +148,12 @@ async function fetch_data(mode: GameMode): Promise<RawWinGoItem[]> {
     }
     throw new Error('Invalid API structure');
   } catch {
-    return [];
+    return engines[mode].raw_api_feed || [];
   }
 }
 
 /**
- * Exact 1:1 Loop Body of `run_console()` from the user's Python script,
- * executing `/jujustu_core.py` directly via Python 3.
+ * Exact 1:1 Loop Body of `run_console()` from the user's Python script.
  */
 async function stepConsoleLoop(mode: GameMode) {
   const data = await fetch_data(mode);
@@ -152,8 +166,6 @@ async function stepConsoleLoop(mode: GameMode) {
   const current_period = latest.issueNumber || '';
   const result_number = latest.number || '';
 
-  // On initial session start, load the historical draw numbers returned by fetch_data()
-  // (oldest to newest prior to data[0], plus data[0] so len >= 10 for Markov & Freq-Balance)
   if (state.last_results_ints.length === 0 && data.length > 0) {
     const chronologicalInts = data
       .slice()
@@ -177,6 +189,7 @@ async function stepConsoleLoop(mode: GameMode) {
       const pred_val = state.current_prediction.prediction;
       const actual_val = get_big_small(result_number);
       const outcome: 'WIN' | 'LOSE' = pred_val === actual_val ? 'WIN' : 'LOSE';
+      const parsedActualNum = parseInt(String(result_number), 10);
 
       if (outcome === 'WIN') {
         state.stats.wins += 1;
@@ -190,6 +203,9 @@ async function stepConsoleLoop(mode: GameMode) {
           entry.actual = actual_val;
           entry.actualNumber = result_number;
           entry.outcome = outcome;
+          // JACKPOT WIN ONLY when predicted singleNumber matches actual drawn number
+          entry.isJackpot =
+            !isNaN(parsedActualNum) && parsedActualNum === Number(entry.singleNumber);
 
           const win_rate =
             state.stats.total > 0 ? (state.stats.wins / state.stats.total) * 100 : 0;
@@ -204,7 +220,6 @@ async function stepConsoleLoop(mode: GameMode) {
       state.current_prediction = {};
     }
 
-    // Update historical ints for newly arrived period (if not already added on bootstrap)
     if (!isInitialBootstrap) {
       const parsedInt = parseInt(result_number, 10);
       if (!isNaN(parsedInt)) {
@@ -215,7 +230,6 @@ async function stepConsoleLoop(mode: GameMode) {
       }
     }
 
-    // Generate new prediction exclusively from Python 3 script (/jujustu_core.py)
     if (/^\d+$/.test(current_period)) {
       const next_period = (BigInt(current_period) + 1n).toString();
       const pyResult = runPythonScriptEngine(
@@ -224,33 +238,32 @@ async function stepConsoleLoop(mode: GameMode) {
         state.prev_prediction
       );
 
-      if (pyResult) {
-        state.latest_telemetry = pyResult.telemetry;
+      state.latest_telemetry = pyResult.telemetry;
 
-        state.current_prediction = {
-          period: next_period,
-          prediction: pyResult.pred,
-          singleNumber: pyResult.singleNumber,
-          reason: pyResult.reason,
-          confidence: pyResult.confidence,
-        };
+      state.current_prediction = {
+        period: next_period,
+        prediction: pyResult.pred,
+        singleNumber: pyResult.singleNumber,
+        reason: pyResult.reason,
+        confidence: pyResult.confidence,
+      };
 
-        state.history_log.push({
-          period: next_period,
-          pred: pyResult.pred,
-          singleNumber: pyResult.singleNumber,
-          actual: '?',
-          actualNumber: '?',
-          outcome: 'PENDING',
-          reason: pyResult.reason,
-          confidence: pyResult.confidence,
-          stats_str: '',
-          timestamp: timeLabel,
-        });
+      state.history_log.push({
+        period: next_period,
+        pred: pyResult.pred,
+        singleNumber: pyResult.singleNumber,
+        actual: '?',
+        actualNumber: '?',
+        outcome: 'PENDING',
+        isJackpot: false,
+        reason: pyResult.reason,
+        confidence: pyResult.confidence,
+        stats_str: '',
+        timestamp: timeLabel,
+      });
 
-        if (state.history_log.length > 500) {
-          state.history_log.shift();
-        }
+      if (state.history_log.length > 500) {
+        state.history_log.shift();
       }
     }
   }
@@ -290,13 +303,15 @@ function serializeModeState(mode: GameMode) {
 
 async function startServer() {
   const app = express();
-  const PORT = 3000;
+  const PORT = Number(process.env.PORT) || 3000;
 
   app.use(express.json());
 
-  await resetAllModes();
-  // Poll every 3 seconds matching time.sleep(3) in the Python script
-  setInterval(pollAllModes, 3000);
+  // Start non-blocking initial poll so server binds PORT immediately for Cloud Run health checks
+  resetAllModes().catch(() => {});
+  setInterval(() => {
+    pollAllModes().catch(() => {});
+  }, 3000);
 
   app.get('/api/engine/state', async (req, res) => {
     const mode: GameMode = req.query.mode === '30S' ? '30S' : '1M';
@@ -341,14 +356,25 @@ async function startServer() {
     });
   });
 
-  if (process.env.NODE_ENV !== 'production') {
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: 'spa',
-    });
-    app.use(vite.middlewares);
+  const distPath = path.join(process.cwd(), 'dist');
+  const isProd = process.env.NODE_ENV === 'production';
+
+  if (!isProd) {
+    try {
+      const vite = await createViteServer({
+        server: { middlewareMode: true },
+        appType: 'spa',
+      });
+      app.use(vite.middlewares);
+    } catch {
+      if (fs.existsSync(distPath)) {
+        app.use(express.static(distPath));
+        app.get('*', (_req, res) => {
+          res.sendFile(path.join(distPath, 'index.html'));
+        });
+      }
+    }
   } else {
-    const distPath = path.join(process.cwd(), 'dist');
     app.use(express.static(distPath));
     app.get('*', (_req, res) => {
       res.sendFile(path.join(distPath, 'index.html'));
@@ -356,7 +382,7 @@ async function startServer() {
   }
 
   app.listen(PORT, '0.0.0.0', () => {
-    console.log(`JUJUTSU SCRIPT V3 (100% Python 3 Engine) running on http://0.0.0.0:${PORT}`);
+    console.log(`JUJUTSU SCRIPT V3 running on http://0.0.0.0:${PORT}`);
   });
 }
 

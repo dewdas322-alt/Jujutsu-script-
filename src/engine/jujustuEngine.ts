@@ -13,6 +13,7 @@ export interface HistoryLogEntry {
   actual: string; // "BIG", "SMALL", or "?"
   actualNumber?: string; // e.g., "7", "3", or "?"
   outcome: 'WIN' | 'LOSE' | 'PENDING';
+  isJackpot?: boolean; // True ONLY when actualNumber === singleNumber
   reason: string;
   confidence: number;
   stats_str: string;
@@ -24,8 +25,14 @@ export function computeSameSideSingleNumber(
   predSize: 'BIG' | 'SMALL'
 ): number {
   const m = telemetry.sub_engines.master;
-  const offset = ((m.method1 + m.method5) % 5 + 5) % 5; // 0..4
-  return predSize === 'BIG' ? 5 + offset : offset; // 5..9 for BIG, 0..4 for SMALL
+  const methods = [m.method1, m.method2, m.method3, m.method4, m.method5];
+  const sameSideCandidates = methods.filter((val) =>
+    predSize === 'BIG' ? val >= 5 : val < 5
+  );
+  if (sameSideCandidates.length > 0) {
+    return sameSideCandidates[0];
+  }
+  return predSize === 'BIG' ? 5 + (m.method5 % 5) : m.method5 % 5;
 }
 
 export interface EngineStats {
