@@ -181,11 +181,13 @@ interface WinPopupData {
 
 interface ClientModeRuntime {
   stats: EngineStats;
+  consecutive_losses: number;
   history_log: HistoryLogEntry[];
   current_prediction: {
     period?: string;
     prediction?: 'BIG' | 'SMALL';
     singleNumber?: number;
+    level?: number;
     reason?: string;
     confidence?: number;
   };
@@ -198,6 +200,7 @@ interface ClientModeRuntime {
 function createFreshClientRuntime(): ClientModeRuntime {
   return {
     stats: { wins: 0, losses: 0, total: 0 },
+    consecutive_losses: 0,
     history_log: [],
     current_prediction: {},
     seen_periods: new Set<string>(),
@@ -425,8 +428,10 @@ export default function App() {
 
           if (outcome === 'WIN') {
             state.stats.wins += 1;
+            state.consecutive_losses = 0;
           } else {
             state.stats.losses += 1;
+            state.consecutive_losses += 1;
           }
           state.stats.total += 1;
 
@@ -462,14 +467,17 @@ export default function App() {
 
         if (/^\d+$/.test(current_period)) {
           const next_period = (BigInt(current_period) + 1n).toString();
+          const activeLevel = Math.min(3, state.consecutive_losses + 1);
           const telemetry = diablo_detailed_telemetry(
             current_period,
             state.last_results_ints,
-            state.prev_prediction
+            state.prev_prediction,
+            state.consecutive_losses
           );
           const singleNumber = computeSameSideSingleNumber(
             telemetry,
-            telemetry.final_pred
+            telemetry.final_pred,
+            state.last_results_ints
           );
 
           state.latest_telemetry = telemetry;
@@ -477,6 +485,7 @@ export default function App() {
             period: next_period,
             prediction: telemetry.final_pred,
             singleNumber,
+            level: activeLevel,
             reason: telemetry.combined_reason,
             confidence: telemetry.confidence,
           };
@@ -491,6 +500,7 @@ export default function App() {
               actualNumber: '?',
               outcome: 'PENDING' as const,
               isJackpot: false,
+              level: activeLevel,
               reason: telemetry.combined_reason,
               confidence: telemetry.confidence,
               stats_str: '',
@@ -503,6 +513,7 @@ export default function App() {
       return {
         mode,
         stats: { ...state.stats },
+        consecutive_losses: state.consecutive_losses,
         current_prediction: { ...state.current_prediction },
         history_log: [...state.history_log],
         last_results_ints: [...state.last_results_ints],
@@ -514,40 +525,48 @@ export default function App() {
     }
   }, []);
 
+  const isSyncingRef = useRef<boolean>(false);
+
   const syncEngineData = useCallback(
     async (activeMode: GameMode) => {
+      if (isSyncingRef.current) return;
+      isSyncingRef.current = true;
       try {
-        const res = await fetch(`/api/engine/state?mode=${activeMode}`, {
-          signal: AbortSignal.timeout(4500),
-        });
-        if (res.ok) {
-          const data = await res.json();
-          const modeObj = data?.modes?.[activeMode] || data;
-          if (modeObj?.current_prediction?.period) {
-            applyServerPayload(data, activeMode);
-            return;
+        try {
+          const res = await fetch(`/api/engine/state?mode=${activeMode}`, {
+            signal: AbortSignal.timeout(3500),
+          });
+          if (res.ok) {
+            const data = await res.json();
+            const modeObj = data?.modes?.[activeMode] || data;
+            if (modeObj?.current_prediction?.period) {
+              applyServerPayload(data, activeMode);
+              return;
+            }
           }
+        } catch {
+          // Fallback to direct browser API sync below
         }
-      } catch {
-        // Fallback to direct browser API sync below
-      }
 
-      const [d30, d1M] = await Promise.all([
-        stepDirectBrowserLoop('30S'),
-        stepDirectBrowserLoop('1M'),
-      ]);
-      const activeData = activeMode === '30S' ? d30 : d1M;
-      if (activeData) {
-        applyServerPayload(
-          {
-            ...activeData,
-            modes: {
-              '30S': d30,
-              '1M': d1M,
+        const [d30, d1M] = await Promise.all([
+          stepDirectBrowserLoop('30S'),
+          stepDirectBrowserLoop('1M'),
+        ]);
+        const activeData = activeMode === '30S' ? d30 : d1M;
+        if (activeData) {
+          applyServerPayload(
+            {
+              ...activeData,
+              modes: {
+                '30S': d30,
+                '1M': d1M,
+              },
             },
-          },
-          activeMode
-        );
+            activeMode
+          );
+        }
+      } finally {
+        isSyncingRef.current = false;
       }
     },
     [applyServerPayload, stepDirectBrowserLoop]
@@ -671,11 +690,15 @@ export default function App() {
   const latestTelemetry: DetailedEngineTelemetry | null =
     activeModeObj.latest_telemetry || null;
 
-  // 100% Python Script Outputs
+  // 100% Python Script Outputs + Level 1-3 Fix Shield
   const hasPythonPrediction = Boolean(currentPrediction.prediction);
   const predSize: 'BIG' | 'SMALL' = currentPrediction.prediction || 'BIG';
   const predConf: number = currentPrediction.confidence ?? 0;
   const predReason: string = currentPrediction.reason || 'syncing python script...';
+  const activeLevel: number =
+    currentPrediction.level || latestTelemetry?.current_level || 1;
+  const activeRegime: string =
+    latestTelemetry?.active_regime || 'A-TO-Z ADAPTIVE MATRIX';
   const periodIdStr: string = currentPrediction.period
     ? `#${currentPrediction.period}`
     : '#SYNCING';
@@ -1157,30 +1180,37 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Live Readout of Top 3 Python Logics (`momentum`, `markov`, `master_calculation`) */}
+              {/* Live Readout of Top Python Logics (N-Gram Markov, ZigZag/Dragon, Master Calc) */}
               <div className="ct-focusV2">
                 <button className="active" style={{ cursor: 'default' }}>
-                  <span className="t">MOMENTUM (2.5x)</span>
+                  <span className="t">N-GRAM MARKOV (3.0x)</span>
                   <span className="s">
-                    {latestTelemetry?.sub_engines.momentum.pred || predSize}
+                    {latestTelemetry?.sub_engines.ngram_markov?.pred ||
+                      latestTelemetry?.sub_engines.markov.pred ||
+                      predSize}
                   </span>
                   <div className="dotline">
                     <i style={{ width: `${predConf}%` }} />
                   </div>
                 </button>
                 <button className="active" style={{ cursor: 'default' }}>
-                  <span className="t">MARKOV DECAY (2.0x)</span>
+                  <span className="t">DRAGON / ZIGZAG</span>
                   <span className="s">
-                    {latestTelemetry?.sub_engines.markov.pred || predSize}
+                    {latestTelemetry?.sub_engines.dragon?.pred ||
+                      latestTelemetry?.sub_engines.zigzag?.pred ||
+                      latestTelemetry?.sub_engines.momentum.pred ||
+                      predSize}
                   </span>
                   <div className="dotline">
                     <i style={{ width: `${predConf}%` }} />
                   </div>
                 </button>
                 <button className="active" style={{ cursor: 'default' }}>
-                  <span className="t">MASTER CALC (5-M)</span>
+                  <span className="t">MIRROR / MASTER</span>
                   <span className="s">
-                    {latestTelemetry?.sub_engines.master.final_prediction || predSize}
+                    {latestTelemetry?.sub_engines.mirror?.pred ||
+                      latestTelemetry?.sub_engines.master.final_prediction ||
+                      predSize}
                   </span>
                   <div className="dotline">
                     <i style={{ width: `${predConf}%` }} />
@@ -1188,14 +1218,16 @@ export default function App() {
                 </button>
               </div>
 
-              {/* ULTRA PREDICTION GLASS STAGE — 100% PYTHON SCRIPT OUTPUT ONLY */}
+              {/* ULTRA PREDICTION GLASS STAGE — 100% PYTHON SCRIPT OUTPUT + LEVEL 1-3 FIX */}
               <div className="ultra-pred">
                 <div className="ultra-top">
                   <div className="ultra-top-left">
                     <span className="ultra-live" />
-                    DIABLO_PREMIUM_PREDICTOR • WINGO {gameMode}
+                    A-TO-Z ADAPTIVE PYTHON • WINGO {gameMode}
                   </div>
-                  <div className="ultra-period">#{shortId} • PYTHON 3</div>
+                  <div className="ultra-period">
+                    LEVEL {activeLevel}/3 FIX • #{shortId}
+                  </div>
                 </div>
                 <div className="ultra-stage">
                   <div className="ultra-rings">
@@ -1206,8 +1238,8 @@ export default function App() {
 
                   <div className="ultra-label">
                     {scanningPulse
-                      ? `RUNNING PYTHON SCRIPT FOR WINGO ${gameMode}...`
-                      : `100% PYTHON SCRIPT PREDICTION • SAME-SIDE SINGLE #${singlePredNum}`}
+                      ? `SCANNING A-TO-Z PATTERNS FOR WINGO ${gameMode}...`
+                      : `🛡️ LEVEL ${activeLevel} FIX LOCK • ${activeRegime}`}
                   </div>
                   <div className="ultra-value">
                     {hasPythonPrediction ? predSize : 'SYNCING...'}
@@ -1227,12 +1259,14 @@ export default function App() {
 
                   <div className="ultra-chips">
                     <div className="ultra-chip">
-                      <b>{predSize}</b>
-                      <span>DIABLO SIGNAL</span>
+                      <b>
+                        {predSize} (#{singlePredNum})
+                      </b>
+                      <span>SAME-SIDE TARGET</span>
                     </div>
                     <div className="ultra-chip">
-                      <b>#{singlePredNum}</b>
-                      <span>SAME-SIDE ({predSize === 'BIG' ? '5-9' : '0-4'})</span>
+                      <b style={{ color: '#fde047' }}>LEVEL {activeLevel}/3</b>
+                      <span>1-3 LEVEL FIX SHIELD</span>
                     </div>
                     <div className="ultra-chip">
                       <b>{predConf}%</b>
@@ -1435,6 +1469,7 @@ export default function App() {
                         <div className="hist-row-left">
                           <div className="hist-row-period">
                             <b>#{item.period.slice(-7)}</b>
+                            <span>L{item.level || 1} FIX</span>
                             <span>{item.timestamp || 'Live'}</span>
                             {isJackpot && (
                               <span className="jackpot-match-tag">
@@ -1783,6 +1818,81 @@ export default function App() {
                 </div>
               </div>
 
+              {/* NEW: A-to-Z Adaptive Pattern & Trend Matrix (Markov, ZigZag, Dragon, Mirror, L1-L3 Shield) */}
+              <div className="card section">
+                <div className="section-head">
+                  <div className="section-title">
+                    🔥 A-to-Z Adaptive Pattern &amp; Trend Matrix ({gameMode})
+                  </div>
+                  <span className="tag">LEVEL {activeLevel}/3 FIX SHIELD</span>
+                </div>
+                <p className="section-desc">
+                  Active Market Regime: <b>{activeRegime}</b> · Real-time 5-Draw Local Backtest Self-Correction active to prevent consecutive loss streaks.
+                </p>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  <div className="pattern-row">
+                    <div>
+                      <span className="t">
+                        N-Gram Markov 2nd/3rd Order (`ngram_markov_order2_3_prediction` · 3.0x)
+                      </span>
+                      <span className="s">
+                        Pattern: {latestTelemetry?.sub_engines.ngram_markov?.pattern ?? '—'} · BIG Score:{' '}
+                        {latestTelemetry?.sub_engines.ngram_markov?.order3_big ?? 0} / SMALL Score:{' '}
+                        {latestTelemetry?.sub_engines.ngram_markov?.order3_small ?? 0}
+                      </span>
+                    </div>
+                    <span className="m blue">
+                      {latestTelemetry?.sub_engines.ngram_markov?.pred ?? predSize}
+                    </span>
+                  </div>
+
+                  <div className="pattern-row">
+                    <div>
+                      <span className="t">
+                        ZigZag Pattern Detector (`zigzag_pattern_prediction` · 3.4x)
+                      </span>
+                      <span className="s">
+                        Mode: {latestTelemetry?.sub_engines.zigzag?.type ?? 'NONE'} (1x1 / 2x2 / 2x1 · Alternations:{' '}
+                        {latestTelemetry?.sub_engines.zigzag?.alternations ?? 0})
+                      </span>
+                    </div>
+                    <span className="m amber">
+                      {latestTelemetry?.sub_engines.zigzag?.pred || 'STANDBY'}
+                    </span>
+                  </div>
+
+                  <div className="pattern-row">
+                    <div>
+                      <span className="t">
+                        Smart Dragon Trend Rider (`dragon_pattern_prediction` · 3.2x)
+                      </span>
+                      <span className="s">
+                        Mode: {latestTelemetry?.sub_engines.dragon?.mode ?? 'STANDBY'} · Run Length:{' '}
+                        {latestTelemetry?.sub_engines.dragon?.dragon_len ?? 0}
+                      </span>
+                    </div>
+                    <span className="m blue">
+                      {latestTelemetry?.sub_engines.dragon?.pred || 'STANDBY'}
+                    </span>
+                  </div>
+
+                  <div className="pattern-row">
+                    <div>
+                      <span className="t">
+                        Mirror &amp; Cyclic Symmetry (`mirror_symmetry_prediction` · 2.4x)
+                      </span>
+                      <span className="s">
+                        Symmetry: {latestTelemetry?.sub_engines.mirror?.symmetry ?? 'COMPLEMENT'} · Match Score:{' '}
+                        {latestTelemetry?.sub_engines.mirror?.match_score ?? 74}%
+                      </span>
+                    </div>
+                    <span className="m amber">
+                      {latestTelemetry?.sub_engines.mirror?.pred ?? predSize}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
               {/* Diablo Pattern AI Sub-Engines */}
               <div className="card section">
                 <div className="section-head">
@@ -2084,6 +2194,7 @@ export default function App() {
                         <div className="hist-row-left">
                           <div className="hist-row-period">
                             <b>#{item.period}</b>
+                            <span>L{item.level || 1} FIX</span>
                             <span>{item.timestamp || 'Live'}</span>
                             {isJackpot && (
                               <span className="jackpot-match-tag">

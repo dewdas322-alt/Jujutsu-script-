@@ -2,7 +2,7 @@ import express from 'express';
 import { createServer as createViteServer } from 'vite';
 import path from 'path';
 import fs from 'fs';
-import { execFileSync } from 'child_process';
+import { execFile } from 'child_process';
 import {
   get_big_small,
   diablo_detailed_telemetry,
@@ -32,11 +32,13 @@ interface RawWinGoItem {
 interface ModeEngineState {
   mode: GameMode;
   stats: EngineStats;
+  consecutive_losses: number;
   history_log: HistoryLogEntry[];
   current_prediction: {
     period?: string;
     prediction?: 'BIG' | 'SMALL';
     singleNumber?: number;
+    level?: number;
     reason?: string;
     confidence?: number;
   };
@@ -47,12 +49,14 @@ interface ModeEngineState {
   last_sync_time: string;
   server_active: boolean;
   raw_api_feed: RawWinGoItem[];
+  is_stepping: boolean;
 }
 
 function createEmptyModeState(mode: GameMode): ModeEngineState {
   return {
     mode,
     stats: { wins: 0, losses: 0, total: 0 },
+    consecutive_losses: 0,
     history_log: [],
     current_prediction: {},
     seen_periods: new Set<string>(),
@@ -62,6 +66,7 @@ function createEmptyModeState(mode: GameMode): ModeEngineState {
     last_sync_time: new Date().toISOString(),
     server_active: true,
     raw_api_feed: [],
+    is_stepping: false,
   };
 }
 
@@ -71,32 +76,45 @@ const engines: Record<GameMode, ModeEngineState> = {
 };
 
 /**
- * Executes the literal unaltered Python 3 script (/jujustu_core.py).
- * If the deployed Cloud Run container does not have python3 binary installed,
- * executes the 100% identical 1:1 port of the Python script so deployment never fails.
+ * Non-blocking async execution of `/jujustu_core.py` (Python 3) with seamless
+ * fallback to the identical 1:1 TypeScript engine if python3 is unavailable in slim Cloud Run images.
  */
-function runPythonScriptEngine(
+async function runPythonScriptEngineAsync(
   period_number: string,
   last_results: number[],
-  prev_prediction: 'BIG' | 'SMALL' | null
-): {
+  prev_prediction: 'BIG' | 'SMALL' | null,
+  consecutive_losses: number
+): Promise<{
   pred: 'BIG' | 'SMALL';
   singleNumber: number;
   reason: string;
   confidence: number;
   telemetry: DetailedEngineTelemetry;
-} {
-  try {
-    const pyScript = path.join(process.cwd(), 'jujustu_core.py');
-    if (fs.existsSync(pyScript)) {
-      const out = execFileSync('python3', [pyScript], {
-        input: JSON.stringify({
-          period_number,
-          last_results,
-          prev_prediction,
-        }),
-        encoding: 'utf-8',
-        timeout: 3500,
+}> {
+  const pyScript = path.join(process.cwd(), 'jujustu_core.py');
+  if (fs.existsSync(pyScript)) {
+    try {
+      const out = await new Promise<string>((resolve, reject) => {
+        const child = execFile(
+          'python3',
+          [pyScript],
+          { timeout: 2500 },
+          (err, stdout) => {
+            if (err) reject(err);
+            else resolve(stdout);
+          }
+        );
+        if (child.stdin) {
+          child.stdin.write(
+            JSON.stringify({
+              period_number,
+              last_results,
+              prev_prediction,
+              consecutive_losses,
+            })
+          );
+          child.stdin.end();
+        }
       });
       const parsed = JSON.parse(out.trim());
       if (parsed && (parsed.pred === 'BIG' || parsed.pred === 'SMALL') && parsed.telemetry) {
@@ -108,13 +126,22 @@ function runPythonScriptEngine(
           telemetry: parsed.telemetry as DetailedEngineTelemetry,
         };
       }
+    } catch {
+      // Fallback below
     }
-  } catch {
-    // Deployed Cloud Run slim container fallback: exact 1:1 Python script logic
   }
 
-  const telemetry = diablo_detailed_telemetry(period_number, last_results, prev_prediction);
-  const singleNumber = computeSameSideSingleNumber(telemetry, telemetry.final_pred);
+  const telemetry = diablo_detailed_telemetry(
+    period_number,
+    last_results,
+    prev_prediction,
+    consecutive_losses
+  );
+  const singleNumber = computeSameSideSingleNumber(
+    telemetry,
+    telemetry.final_pred,
+    last_results
+  );
   return {
     pred: telemetry.final_pred,
     singleNumber,
@@ -130,7 +157,7 @@ async function fetch_data(mode: GameMode): Promise<RawWinGoItem[]> {
     const url = `${API_URLS[mode]}${ts}`;
     const response = await fetch(url, {
       headers: HEADERS,
-      signal: AbortSignal.timeout(8000),
+      signal: AbortSignal.timeout(6000),
     });
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}`);
@@ -152,120 +179,128 @@ async function fetch_data(mode: GameMode): Promise<RawWinGoItem[]> {
   }
 }
 
-/**
- * Exact 1:1 Loop Body of `run_console()` from the user's Python script.
- */
 async function stepConsoleLoop(mode: GameMode) {
-  const data = await fetch_data(mode);
-  if (!data || data.length === 0) {
-    return;
-  }
-
   const state = engines[mode];
-  const latest = data[0];
-  const current_period = latest.issueNumber || '';
-  const result_number = latest.number || '';
+  if (state.is_stepping) return;
+  state.is_stepping = true;
 
-  if (state.last_results_ints.length === 0 && data.length > 0) {
-    const chronologicalInts = data
-      .slice()
-      .reverse()
-      .map((item) => parseInt(item.number, 10))
-      .filter((n) => !isNaN(n));
-    state.last_results_ints = chronologicalInts;
-  }
+  try {
+    const data = await fetch_data(mode);
+    if (!data || data.length === 0) {
+      return;
+    }
 
-  if (current_period && !state.seen_periods.has(current_period)) {
-    const isInitialBootstrap = state.seen_periods.size === 0;
-    state.seen_periods.add(current_period);
-    const timeLabel = new Date().toLocaleTimeString([], { hour12: false });
+    const latest = data[0];
+    const current_period = latest.issueNumber || '';
+    const result_number = latest.number || '';
 
-    // Check pending prediction
-    if (
-      state.current_prediction &&
-      state.current_prediction.period === current_period &&
-      state.current_prediction.prediction
-    ) {
-      const pred_val = state.current_prediction.prediction;
-      const actual_val = get_big_small(result_number);
-      const outcome: 'WIN' | 'LOSE' = pred_val === actual_val ? 'WIN' : 'LOSE';
-      const parsedActualNum = parseInt(String(result_number), 10);
+    if (state.last_results_ints.length === 0 && data.length > 0) {
+      const chronologicalInts = data
+        .slice()
+        .reverse()
+        .map((item) => parseInt(item.number, 10))
+        .filter((n) => !isNaN(n));
+      state.last_results_ints = chronologicalInts;
+    }
 
-      if (outcome === 'WIN') {
-        state.stats.wins += 1;
-      } else {
-        state.stats.losses += 1;
+    if (current_period && !state.seen_periods.has(current_period)) {
+      const isInitialBootstrap = state.seen_periods.size === 0;
+      state.seen_periods.add(current_period);
+      const timeLabel = new Date().toLocaleTimeString([], { hour12: false });
+
+      if (
+        state.current_prediction &&
+        state.current_prediction.period === current_period &&
+        state.current_prediction.prediction
+      ) {
+        const pred_val = state.current_prediction.prediction;
+        const actual_val = get_big_small(result_number);
+        const outcome: 'WIN' | 'LOSE' = pred_val === actual_val ? 'WIN' : 'LOSE';
+        const parsedActualNum = parseInt(String(result_number), 10);
+
+        if (outcome === 'WIN') {
+          state.stats.wins += 1;
+          state.consecutive_losses = 0;
+        } else {
+          state.stats.losses += 1;
+          state.consecutive_losses += 1;
+        }
+        state.stats.total += 1;
+
+        for (const entry of state.history_log) {
+          if (entry.period === current_period) {
+            entry.actual = actual_val;
+            entry.actualNumber = result_number;
+            entry.outcome = outcome;
+            entry.isJackpot =
+              !isNaN(parsedActualNum) && parsedActualNum === Number(entry.singleNumber);
+
+            const win_rate =
+              state.stats.total > 0 ? (state.stats.wins / state.stats.total) * 100 : 0;
+            const stats_str = `(${state.stats.wins}W/${state.stats.losses}L) ×${state.stats.wins}`;
+            entry.stats_str = `${win_rate.toFixed(1)}% ${stats_str}`;
+            entry.timestamp = timeLabel;
+            break;
+          }
+        }
+
+        state.prev_prediction = pred_val;
+        state.current_prediction = {};
       }
-      state.stats.total += 1;
 
-      for (const entry of state.history_log) {
-        if (entry.period === current_period) {
-          entry.actual = actual_val;
-          entry.actualNumber = result_number;
-          entry.outcome = outcome;
-          // JACKPOT WIN ONLY when predicted singleNumber matches actual drawn number
-          entry.isJackpot =
-            !isNaN(parsedActualNum) && parsedActualNum === Number(entry.singleNumber);
-
-          const win_rate =
-            state.stats.total > 0 ? (state.stats.wins / state.stats.total) * 100 : 0;
-          const stats_str = `(${state.stats.wins}W/${state.stats.losses}L) ×${state.stats.wins}`;
-          entry.stats_str = `${win_rate.toFixed(1)}% ${stats_str}`;
-          entry.timestamp = timeLabel;
-          break;
+      if (!isInitialBootstrap) {
+        const parsedInt = parseInt(result_number, 10);
+        if (!isNaN(parsedInt)) {
+          state.last_results_ints.push(parsedInt);
+          if (state.last_results_ints.length > 50) {
+            state.last_results_ints.shift();
+          }
         }
       }
 
-      state.prev_prediction = pred_val;
-      state.current_prediction = {};
-    }
+      if (/^\d+$/.test(current_period)) {
+        const next_period = (BigInt(current_period) + 1n).toString();
+        const activeLevel = Math.min(3, state.consecutive_losses + 1);
+        const pyResult = await runPythonScriptEngineAsync(
+          current_period,
+          state.last_results_ints,
+          state.prev_prediction,
+          state.consecutive_losses
+        );
 
-    if (!isInitialBootstrap) {
-      const parsedInt = parseInt(result_number, 10);
-      if (!isNaN(parsedInt)) {
-        state.last_results_ints.push(parsedInt);
-        if (state.last_results_ints.length > 50) {
-          state.last_results_ints.shift();
+        state.latest_telemetry = pyResult.telemetry;
+
+        state.current_prediction = {
+          period: next_period,
+          prediction: pyResult.pred,
+          singleNumber: pyResult.singleNumber,
+          level: activeLevel,
+          reason: pyResult.reason,
+          confidence: pyResult.confidence,
+        };
+
+        state.history_log.push({
+          period: next_period,
+          pred: pyResult.pred,
+          singleNumber: pyResult.singleNumber,
+          actual: '?',
+          actualNumber: '?',
+          outcome: 'PENDING',
+          isJackpot: false,
+          level: activeLevel,
+          reason: pyResult.reason,
+          confidence: pyResult.confidence,
+          stats_str: '',
+          timestamp: timeLabel,
+        });
+
+        if (state.history_log.length > 500) {
+          state.history_log.shift();
         }
       }
     }
-
-    if (/^\d+$/.test(current_period)) {
-      const next_period = (BigInt(current_period) + 1n).toString();
-      const pyResult = runPythonScriptEngine(
-        current_period,
-        state.last_results_ints,
-        state.prev_prediction
-      );
-
-      state.latest_telemetry = pyResult.telemetry;
-
-      state.current_prediction = {
-        period: next_period,
-        prediction: pyResult.pred,
-        singleNumber: pyResult.singleNumber,
-        reason: pyResult.reason,
-        confidence: pyResult.confidence,
-      };
-
-      state.history_log.push({
-        period: next_period,
-        pred: pyResult.pred,
-        singleNumber: pyResult.singleNumber,
-        actual: '?',
-        actualNumber: '?',
-        outcome: 'PENDING',
-        isJackpot: false,
-        reason: pyResult.reason,
-        confidence: pyResult.confidence,
-        stats_str: '',
-        timestamp: timeLabel,
-      });
-
-      if (state.history_log.length > 500) {
-        state.history_log.shift();
-      }
-    }
+  } finally {
+    state.is_stepping = false;
   }
 }
 
@@ -290,6 +325,7 @@ function serializeModeState(mode: GameMode) {
   return {
     mode: s.mode,
     stats: s.stats,
+    consecutive_losses: s.consecutive_losses,
     current_prediction: s.current_prediction,
     history_log: s.history_log,
     last_results_ints: s.last_results_ints,
@@ -307,15 +343,14 @@ async function startServer() {
 
   app.use(express.json());
 
-  // Start non-blocking initial poll so server binds PORT immediately for Cloud Run health checks
   resetAllModes().catch(() => {});
   setInterval(() => {
     pollAllModes().catch(() => {});
-  }, 3000);
+  }, 2500);
 
   app.get('/api/engine/state', async (req, res) => {
     const mode: GameMode = req.query.mode === '30S' ? '30S' : '1M';
-    if (engines[mode].history_log.length === 0) {
+    if (engines[mode].history_log.length === 0 && !engines[mode].is_stepping) {
       await stepConsoleLoop(mode);
     }
     res.json({
@@ -382,7 +417,7 @@ async function startServer() {
   }
 
   app.listen(PORT, '0.0.0.0', () => {
-    console.log(`JUJUTSU SCRIPT V3 running on http://0.0.0.0:${PORT}`);
+    console.log(`JUJUTSU SCRIPT V3 (Ultra-Smooth A-to-Z Adaptive Engine) running on http://0.0.0.0:${PORT}`);
   });
 }
 
