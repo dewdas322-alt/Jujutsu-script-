@@ -1,10 +1,9 @@
 import express from 'express';
 import { createServer as createViteServer } from 'vite';
 import path from 'path';
+import { execFileSync } from 'child_process';
 import {
   get_big_small,
-  diablo_detailed_telemetry,
-  computeSameSideSingleNumber,
   HistoryLogEntry,
   EngineStats,
   DetailedEngineTelemetry,
@@ -25,8 +24,6 @@ const HEADERS = {
 interface RawWinGoItem {
   issueNumber: string;
   number: string;
-  color?: string;
-  premium?: string;
 }
 
 interface ModeEngineState {
@@ -70,13 +67,55 @@ const engines: Record<GameMode, ModeEngineState> = {
   '1M': createEmptyModeState('1M'),
 };
 
-async function fetchWinGoData(mode: GameMode): Promise<RawWinGoItem[]> {
+/**
+ * Executes ONLY the literal unaltered Python 3 script (/jujustu_core.py).
+ * Zero TypeScript prediction or fallback logic is used.
+ */
+function runPythonScriptEngine(
+  period_number: string,
+  last_results: number[],
+  prev_prediction: 'BIG' | 'SMALL' | null
+): {
+  pred: 'BIG' | 'SMALL';
+  singleNumber: number;
+  reason: string;
+  confidence: number;
+  telemetry: DetailedEngineTelemetry;
+} | null {
+  try {
+    const pyScript = path.join(process.cwd(), 'jujustu_core.py');
+    const out = execFileSync('python3', [pyScript], {
+      input: JSON.stringify({
+        period_number,
+        last_results,
+        prev_prediction,
+      }),
+      encoding: 'utf-8',
+      timeout: 4000,
+    });
+    const parsed = JSON.parse(out.trim());
+    if (parsed && (parsed.pred === 'BIG' || parsed.pred === 'SMALL') && parsed.telemetry) {
+      return {
+        pred: parsed.pred,
+        singleNumber: Number(parsed.singleNumber),
+        reason: String(parsed.reason),
+        confidence: Number(parsed.confidence),
+        telemetry: parsed.telemetry as DetailedEngineTelemetry,
+      };
+    }
+  } catch (err) {
+    console.error('Python engine execution error:', err);
+  }
+  return null;
+}
+
+async function fetch_data(mode: GameMode): Promise<RawWinGoItem[]> {
   try {
     const ts = Date.now();
     const url = `${API_URLS[mode]}${ts}`;
     const response = await fetch(url, {
       headers: HEADERS,
-      signal: AbortSignal.timeout(7000),
+      signal: AbortSignal.timeout(8000),
     });
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}`);
@@ -86,8 +125,6 @@ async function fetchWinGoData(mode: GameMode): Promise<RawWinGoItem[]> {
       const formatted: RawWinGoItem[] = result.data.list.map((item: any) => ({
         issueNumber: String(item.issueNumber || ''),
         number: String(item.number || ''),
-        color: String(item.color || ''),
-        premium: String(item.premium || ''),
       }));
       engines[mode].raw_api_feed = formatted;
       engines[mode].server_active = true;
@@ -100,124 +137,128 @@ async function fetchWinGoData(mode: GameMode): Promise<RawWinGoItem[]> {
   }
 }
 
-function processPeriodStep(
-  mode: GameMode,
-  current_period: string,
-  result_number: string,
-  timestampStr?: string
-) {
-  const state = engines[mode];
-  if (!current_period || state.seen_periods.has(current_period)) {
+/**
+ * Exact 1:1 Loop Body of `run_console()` from the user's Python script,
+ * executing `/jujustu_core.py` directly via Python 3.
+ */
+async function stepConsoleLoop(mode: GameMode) {
+  const data = await fetch_data(mode);
+  if (!data || data.length === 0) {
     return;
   }
-  state.seen_periods.add(current_period);
-  const timeLabel = timestampStr || new Date().toLocaleTimeString([], { hour12: false });
 
-  // 1. Check pending prediction (Exact match to Python script)
-  if (
-    state.current_prediction &&
-    state.current_prediction.period === current_period &&
-    state.current_prediction.prediction
-  ) {
-    const pred_val = state.current_prediction.prediction;
-    const actual_val = get_big_small(result_number);
-    const outcome: 'WIN' | 'LOSE' = pred_val === actual_val ? 'WIN' : 'LOSE';
+  const state = engines[mode];
+  const latest = data[0];
+  const current_period = latest.issueNumber || '';
+  const result_number = latest.number || '';
 
-    if (outcome === 'WIN') {
-      state.stats.wins += 1;
-    } else {
-      state.stats.losses += 1;
+  // On initial session start, load the historical draw numbers returned by fetch_data()
+  // (oldest to newest prior to data[0], plus data[0] so len >= 10 for Markov & Freq-Balance)
+  if (state.last_results_ints.length === 0 && data.length > 0) {
+    const chronologicalInts = data
+      .slice()
+      .reverse()
+      .map((item) => parseInt(item.number, 10))
+      .filter((n) => !isNaN(n));
+    state.last_results_ints = chronologicalInts;
+  }
+
+  if (current_period && !state.seen_periods.has(current_period)) {
+    const isInitialBootstrap = state.seen_periods.size === 0;
+    state.seen_periods.add(current_period);
+    const timeLabel = new Date().toLocaleTimeString([], { hour12: false });
+
+    // Check pending prediction
+    if (
+      state.current_prediction &&
+      state.current_prediction.period === current_period &&
+      state.current_prediction.prediction
+    ) {
+      const pred_val = state.current_prediction.prediction;
+      const actual_val = get_big_small(result_number);
+      const outcome: 'WIN' | 'LOSE' = pred_val === actual_val ? 'WIN' : 'LOSE';
+
+      if (outcome === 'WIN') {
+        state.stats.wins += 1;
+      } else {
+        state.stats.losses += 1;
+      }
+      state.stats.total += 1;
+
+      for (const entry of state.history_log) {
+        if (entry.period === current_period) {
+          entry.actual = actual_val;
+          entry.actualNumber = result_number;
+          entry.outcome = outcome;
+
+          const win_rate =
+            state.stats.total > 0 ? (state.stats.wins / state.stats.total) * 100 : 0;
+          const stats_str = `(${state.stats.wins}W/${state.stats.losses}L) ×${state.stats.wins}`;
+          entry.stats_str = `${win_rate.toFixed(1)}% ${stats_str}`;
+          entry.timestamp = timeLabel;
+          break;
+        }
+      }
+
+      state.prev_prediction = pred_val;
+      state.current_prediction = {};
     }
-    state.stats.total += 1;
 
-    for (let i = state.history_log.length - 1; i >= 0; i--) {
-      const entry = state.history_log[i];
-      if (entry.period === current_period) {
-        entry.actual = actual_val;
-        entry.actualNumber = result_number;
-        entry.outcome = outcome;
-
-        const win_rate =
-          state.stats.total > 0 ? (state.stats.wins / state.stats.total) * 100 : 0;
-        const stats_str = `(${state.stats.wins}W/${state.stats.losses}L) ×${state.stats.wins}`;
-        entry.stats_str = `${win_rate.toFixed(1)}% ${stats_str}`;
-        entry.timestamp = timeLabel;
-        break;
+    // Update historical ints for newly arrived period (if not already added on bootstrap)
+    if (!isInitialBootstrap) {
+      const parsedInt = parseInt(result_number, 10);
+      if (!isNaN(parsedInt)) {
+        state.last_results_ints.push(parsedInt);
+        if (state.last_results_ints.length > 50) {
+          state.last_results_ints.shift();
+        }
       }
     }
 
-    state.prev_prediction = pred_val;
-    state.current_prediction = {};
-  }
+    // Generate new prediction exclusively from Python 3 script (/jujustu_core.py)
+    if (/^\d+$/.test(current_period)) {
+      const next_period = (BigInt(current_period) + 1n).toString();
+      const pyResult = runPythonScriptEngine(
+        current_period,
+        state.last_results_ints,
+        state.prev_prediction
+      );
 
-  // 2. Automatically generate new prediction for next_period (Exact Python script order)
-  if (/^\d+$/.test(current_period)) {
-    const next_period = (BigInt(current_period) + 1n).toString();
-    const telemetry = diablo_detailed_telemetry(
-      current_period,
-      state.last_results_ints,
-      state.prev_prediction
-    );
-    const next_pred = telemetry.final_pred;
-    const reason = telemetry.combined_reason;
-    const confidence = telemetry.confidence;
-    // Strictly same-side single number: 5..9 for BIG, 0..4 for SMALL
-    const singleNumber = computeSameSideSingleNumber(telemetry, next_pred);
+      if (pyResult) {
+        state.latest_telemetry = pyResult.telemetry;
 
-    state.latest_telemetry = telemetry;
+        state.current_prediction = {
+          period: next_period,
+          prediction: pyResult.pred,
+          singleNumber: pyResult.singleNumber,
+          reason: pyResult.reason,
+          confidence: pyResult.confidence,
+        };
 
-    state.current_prediction = {
-      period: next_period,
-      prediction: next_pred,
-      singleNumber,
-      reason,
-      confidence,
-    };
+        state.history_log.push({
+          period: next_period,
+          pred: pyResult.pred,
+          singleNumber: pyResult.singleNumber,
+          actual: '?',
+          actualNumber: '?',
+          outcome: 'PENDING',
+          reason: pyResult.reason,
+          confidence: pyResult.confidence,
+          stats_str: '',
+          timestamp: timeLabel,
+        });
 
-    state.history_log.push({
-      period: next_period,
-      pred: next_pred,
-      singleNumber,
-      actual: '?',
-      actualNumber: '?',
-      outcome: 'PENDING',
-      reason,
-      confidence,
-      stats_str: '',
-      timestamp: timeLabel,
-    });
-  }
-
-  // 3. Update historical ints
-  const parsedNum = parseInt(result_number, 10);
-  if (!isNaN(parsedNum)) {
-    state.last_results_ints.push(parsedNum);
-    if (state.last_results_ints.length > 50) {
-      state.last_results_ints.shift();
+        if (state.history_log.length > 500) {
+          state.history_log.shift();
+        }
+      }
     }
   }
 }
 
 async function resetModeToFreshLiveSession(mode: GameMode) {
   engines[mode] = createEmptyModeState(mode);
-  const state = engines[mode];
-
-  const data = await fetchWinGoData(mode);
-  if (data.length > 0) {
-    const chronological = [...data].reverse();
-    // Warm up last_results_ints with the past 9 draws so Markov/Freq/Master have real history
-    for (let i = 0; i < chronological.length - 1; i++) {
-      const item = chronological[i];
-      state.seen_periods.add(item.issueNumber);
-      const n = parseInt(item.number, 10);
-      if (!isNaN(n)) {
-        state.last_results_ints.push(n);
-      }
-    }
-    // Process only the current latest draw to generate the immediate live auto-prediction
-    const latest = chronological[chronological.length - 1];
-    processPeriodStep(mode, latest.issueNumber, latest.number);
-  }
+  await stepConsoleLoop(mode);
 }
 
 async function resetAllModes() {
@@ -227,25 +268,8 @@ async function resetAllModes() {
   ]);
 }
 
-async function pollMode(mode: GameMode) {
-  try {
-    const data = await fetchWinGoData(mode);
-    if (data && data.length > 0) {
-      const state = engines[mode];
-      const unseen = data
-        .filter((d) => !state.seen_periods.has(d.issueNumber))
-        .reverse();
-      for (const item of unseen) {
-        processPeriodStep(mode, item.issueNumber, item.number);
-      }
-    }
-  } catch {
-    // ignore transient network errors
-  }
-}
-
 async function pollAllModes() {
-  await Promise.all([pollMode('30S'), pollMode('1M')]);
+  await Promise.all([stepConsoleLoop('30S'), stepConsoleLoop('1M')]);
 }
 
 function serializeModeState(mode: GameMode) {
@@ -271,14 +295,13 @@ async function startServer() {
   app.use(express.json());
 
   await resetAllModes();
-  // Continuous polling every 2 seconds for both 30S and 1M live feeds
-  setInterval(pollAllModes, 2000);
+  // Poll every 3 seconds matching time.sleep(3) in the Python script
+  setInterval(pollAllModes, 3000);
 
-  // Get State for requested mode (plus both modes payload for instant switching)
   app.get('/api/engine/state', async (req, res) => {
     const mode: GameMode = req.query.mode === '30S' ? '30S' : '1M';
     if (engines[mode].history_log.length === 0) {
-      await resetModeToFreshLiveSession(mode);
+      await stepConsoleLoop(mode);
     }
     res.json({
       ...serializeModeState(mode),
@@ -289,7 +312,6 @@ async function startServer() {
     });
   });
 
-  // Force Immediate Live Sync
   app.post('/api/engine/sync', async (req, res) => {
     const mode: GameMode = req.body?.mode === '30S' ? '30S' : '1M';
     await pollAllModes();
@@ -302,7 +324,6 @@ async function startServer() {
     });
   });
 
-  // Auto-Wipe History & Reset to Fresh Live Session (Triggered on page open / back / exit)
   app.post('/api/engine/reset-live', async (req, res) => {
     const targetMode = req.body?.mode as GameMode | undefined;
     if (targetMode === '30S' || targetMode === '1M') {
@@ -335,7 +356,7 @@ async function startServer() {
   }
 
   app.listen(PORT, '0.0.0.0', () => {
-    console.log(`JUJUTSU SCRIPT V3 (30S + 1M) Server running on http://0.0.0.0:${PORT}`);
+    console.log(`JUJUTSU SCRIPT V3 (100% Python 3 Engine) running on http://0.0.0.0:${PORT}`);
   });
 }
 

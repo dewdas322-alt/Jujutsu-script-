@@ -8,10 +8,7 @@ import {
   HistoryLogEntry,
   EngineStats,
   DetailedEngineTelemetry,
-  computeSameSideSingleNumber,
 } from './engine/jujustuEngine';
-
-const TELEGRAM_LINK = 'https://t.me/freefaack';
 
 export type GameMode = '30S' | '1M';
 
@@ -28,7 +25,6 @@ const NUM_IMGS: Record<number, string> = {
   9: 'https://i.postimg.cc/ryRQPjmw/num0-4-9.png',
 };
 
-// High-Contrast 3D Ball SVG Fallback (Guarantees zero broken images)
 function getSvgBallFallback(num: number): string {
   const n = ((num % 10) + 10) % 10;
   const isGreen = n === 1 || n === 3 || n === 7 || n === 9 || n === 5;
@@ -137,30 +133,28 @@ const LANGS: Record<
   }
 > = {
   en: {
-    periodForecast: 'JUJUTSU SCRIPT • LIVE FORECAST',
+    periodForecast: 'JUJUTSU SCRIPT • PYTHON ENGINE',
     timeLeft: 'TIME LEFT',
   },
   hi: {
-    periodForecast: 'JUJUTSU SCRIPT • पीरियड पूर्वानुमान',
+    periodForecast: 'JUJUTSU SCRIPT • पायथन इंजन',
     timeLeft: 'शेष समय',
   },
   bn: {
-    periodForecast: 'JUJUTSU SCRIPT • পিরিয়ড পূর্বাভাস',
+    periodForecast: 'JUJUTSU SCRIPT • পাইথন ইঞ্জিন',
     timeLeft: 'বাকি সময়',
   },
   es: {
-    periodForecast: 'JUJUTSU SCRIPT • PRONÓSTICO EN VIVO',
+    periodForecast: 'JUJUTSU SCRIPT • MOTOR PYTHON',
     timeLeft: 'TIEMPO RESTANTE',
   },
   pt: {
-    periodForecast: 'JUJUTSU SCRIPT • PREVISÃO AO VIVO',
+    periodForecast: 'JUJUTSU SCRIPT • MOTOR PYTHON',
     timeLeft: 'TEMPO RESTANTE',
   },
 };
 
-// Strictly 3 Tabs as requested: Dashboard, Engine, My (Patterns & Live Draw removed)
 type TabId = 'dashboard' | 'engine' | 'my';
-type FocusTarget = 'SIZE' | 'NUMBER' | 'COLOUR';
 
 interface SupportMessage {
   id: string;
@@ -170,13 +164,10 @@ interface SupportMessage {
 }
 
 interface WinPopupData {
-  isJackpot: boolean;
   roundId: string;
-  focusedTarget: string;
   targetValue: string;
   actualNumber: string | number;
   actualSize: string;
-  actualColour: string;
 }
 
 function pad2(n: number) {
@@ -188,63 +179,28 @@ function nowTime() {
 }
 
 function splitPeriod(p?: string) {
-  if (!p) return { prefix: '#', highlight: '00000' };
+  if (!p) return { prefix: '#', highlight: '-----' };
   const f = p.startsWith('#') ? p : `#${p}`;
   if (f.length > 5) return { prefix: f.slice(0, f.length - 5), highlight: f.slice(f.length - 5) };
   return { prefix: '', highlight: f };
 }
 
 /**
- * STRICT SAME-SIDE SINGLE NUMBER LOCK:
- * Never returns an opposite-side number under any circumstance.
- * - BIG -> strictly 5, 6, 7, 8, or 9
- * - SMALL -> strictly 0, 1, 2, 3, or 4
+ * Validates that singleNumber is strictly on the same side as predSize (5..9 for BIG, 0..4 for SMALL).
+ * Uses the exact singleNumber computed by Python's master_calculation_prediction (method1..method5).
  */
-function ensureStrictSameSideSingleNumber(
-  predSize: 'BIG' | 'SMALL',
-  candidateNum?: number,
-  telemetry?: DetailedEngineTelemetry | null
-): {
-  predictedSize: 'BIG' | 'SMALL';
-  predictedNumber: number;
-  predictedColour: 'GREEN' | 'RED';
-} {
-  let num: number;
-  if (
-    typeof candidateNum === 'number' &&
-    !isNaN(candidateNum) &&
-    ((predSize === 'BIG' && candidateNum >= 5 && candidateNum <= 9) ||
-      (predSize === 'SMALL' && candidateNum >= 0 && candidateNum <= 4))
-  ) {
-    num = candidateNum;
-  } else if (telemetry) {
-    num = computeSameSideSingleNumber(telemetry, predSize);
-  } else {
-    num = predSize === 'BIG' ? 7 : 2;
+function getValidatedSameSideNumber(predSize?: 'BIG' | 'SMALL', pySingleNum?: number): number {
+  if (typeof pySingleNum === 'number' && !isNaN(pySingleNum)) {
+    if (predSize === 'BIG' && pySingleNum >= 5 && pySingleNum <= 9) return pySingleNum;
+    if (predSize === 'SMALL' && pySingleNum >= 0 && pySingleNum <= 4) return pySingleNum;
   }
-
-  // Final hard mathematical clamp so opposite side is 100% impossible
-  if (predSize === 'BIG') {
-    num = Math.max(5, Math.min(9, num));
-  } else {
-    num = Math.max(0, Math.min(4, num));
-  }
-
-  const predColour: 'GREEN' | 'RED' =
-    num === 1 || num === 3 || num === 5 || num === 7 || num === 9 ? 'GREEN' : 'RED';
-
-  return {
-    predictedSize: predSize,
-    predictedNumber: num,
-    predictedColour: predColour,
-  };
+  return predSize === 'SMALL' ? 2 : 7;
 }
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<TabId>('dashboard');
   const [gameMode, setGameMode] = useState<GameMode>('30S');
   const [lang, setLang] = useState<string>('en');
-  const [focusedTarget, setFocusedTarget] = useState<FocusTarget>('SIZE');
   const [multiplier, setMultiplier] = useState<string>('1X');
   const [martingaleStep, setMartingaleStep] = useState<number>(1);
   const [matrixView, setMatrixView] = useState<'balls' | 'grid'>('balls');
@@ -259,18 +215,17 @@ export default function App() {
   const [menuOpen, setMenuOpen] = useState<boolean>(false);
   const [settingsOpen, setSettingsOpen] = useState<boolean>(false);
   const [settingsView, setSettingsView] = useState<
-    'none' | 'predictionSettings' | 'language' | 'about'
+    'none' | 'predictionSettings' | 'language'
   >('none');
   const [supportOpen, setSupportOpen] = useState<boolean>(false);
   const [notifOpen, setNotifOpen] = useState<boolean>(false);
   const [winData, setWinData] = useState<WinPopupData | null>(null);
 
-  // Support Chat State
   const [supportMessages, setSupportMessages] = useState<SupportMessage[]>([
     {
       id: 'welcome',
       sender: 'ai',
-      text: `नमस्ते! मैं JUJUTSU SCRIPT V3 AI सपोर्ट हूँ (Powered by @AJAYTREDERKING)।\n\nयह सिस्टम WinGo 30S (30 सेकंड) और WinGo 1M (1 मिनट) दोनों लाइव API के साथ रियल-टाइम सिंक है और हमेशा 100% Same-Side Single Number ऑटो-प्रेडिक्शन देता है।`,
+      text: `नमस्ते! मैं JUJUTSU SCRIPT V3 सपोर्ट हूँ (Powered by @AJAYTREDERKING)।\n\nयह सिस्टम 100% केवल आपकी Python Script (diablo_premium_predictor + master_calculation_prediction + hybrid_prediction) के लॉजिक से ही प्रेडिक्शन देता है, खुद से कुछ भी जनरेट नहीं करता।`,
       timestamp: nowTime(),
     },
   ]);
@@ -288,6 +243,8 @@ export default function App() {
 
   const prevTotalsRef = useRef<Record<GameMode, number>>({ '30S': 0, '1M': 0 });
   const prevPeriodsRef = useRef<Record<GameMode, string>>({ '30S': '', '1M': '' });
+  const gameModeRef = useRef<GameMode>(gameMode);
+  gameModeRef.current = gameMode;
 
   const showToast = useCallback((msg: string) => {
     setToast(msg);
@@ -296,80 +253,72 @@ export default function App() {
     }, 2400);
   }, []);
 
-  const applyServerPayload = useCallback(
-    (payload: any, activeMode: GameMode) => {
-      if (!payload) return;
+  const applyServerPayload = useCallback((payload: any, activeMode: GameMode) => {
+    if (!payload) return;
 
-      const nextModes = payload.modes || {
-        [activeMode]: payload,
-      };
+    const nextModes = payload.modes || {
+      [activeMode]: payload,
+    };
 
-      setModesData((prev) => ({
-        '30S': nextModes['30S'] || prev['30S'],
-        '1M': nextModes['1M'] || prev['1M'],
-      }));
+    setModesData((prev) => ({
+      '30S': nextModes['30S'] || prev['30S'],
+      '1M': nextModes['1M'] || prev['1M'],
+    }));
 
-      const currentModeData = nextModes[activeMode] || payload;
-      if (!currentModeData) return;
+    const currentModeData = nextModes[activeMode] || payload;
+    if (!currentModeData) return;
 
-      const incomingPeriod = currentModeData.current_prediction?.period;
+    const incomingPeriod = currentModeData.current_prediction?.period;
+    if (
+      incomingPeriod &&
+      prevPeriodsRef.current[activeMode] &&
+      incomingPeriod !== prevPeriodsRef.current[activeMode]
+    ) {
+      setScanningPulse(true);
+      SoundFX.scan();
+      setTimeout(() => {
+        setScanningPulse(false);
+        SoundFX.success();
+      }, 500);
+    }
+    if (incomingPeriod) {
+      prevPeriodsRef.current[activeMode] = incomingPeriod;
+    }
+
+    if (currentModeData.stats) {
+      const prevTotal = prevTotalsRef.current[activeMode];
       if (
-        incomingPeriod &&
-        prevPeriodsRef.current[activeMode] &&
-        incomingPeriod !== prevPeriodsRef.current[activeMode]
+        prevTotal > 0 &&
+        currentModeData.stats.total > prevTotal &&
+        Array.isArray(currentModeData.history_log)
       ) {
-        setScanningPulse(true);
-        SoundFX.scan();
-        setTimeout(() => {
-          setScanningPulse(false);
-          SoundFX.success();
-        }, 500);
-      }
-      if (incomingPeriod) {
-        prevPeriodsRef.current[activeMode] = incomingPeriod;
-      }
-
-      if (currentModeData.stats) {
-        const prevTotal = prevTotalsRef.current[activeMode];
-        if (
-          prevTotal > 0 &&
-          currentModeData.stats.total > prevTotal &&
-          Array.isArray(currentModeData.history_log)
-        ) {
-          const settled = currentModeData.history_log.filter(
-            (h: HistoryLogEntry) => h.outcome === 'WIN' || h.outcome === 'LOSE'
-          );
-          const lastSettled: HistoryLogEntry | undefined = settled[settled.length - 1];
-          if (lastSettled) {
-            if (lastSettled.outcome === 'WIN') {
-              const num = parseInt(String(lastSettled.actualNumber ?? '7'), 10);
-              const actualColour =
-                num === 0 || num === 5 ? 'VIOLET' : num % 2 === 0 ? 'RED' : 'GREEN';
-              setWinData({
-                isJackpot: true,
-                roundId: `#${lastSettled.period}`,
-                focusedTarget: `WINGO ${activeMode}`,
-                targetValue: `${lastSettled.pred} (#${lastSettled.singleNumber})`,
-                actualNumber: isNaN(num) ? '?' : num,
-                actualSize: lastSettled.actual,
-                actualColour,
-              });
-              SoundFX.win();
-              setTimeout(() => setWinData(null), 3200);
-            } else {
-              SoundFX.loss();
-            }
+        const settled = currentModeData.history_log.filter(
+          (h: HistoryLogEntry) => h.outcome === 'WIN' || h.outcome === 'LOSE'
+        );
+        const lastSettled: HistoryLogEntry | undefined = settled[settled.length - 1];
+        if (lastSettled) {
+          if (lastSettled.outcome === 'WIN') {
+            setWinData({
+              roundId: `#${lastSettled.period}`,
+              targetValue: `${lastSettled.pred} (#${lastSettled.singleNumber})`,
+              actualNumber: lastSettled.actualNumber ?? '?',
+              actualSize: lastSettled.actual,
+            });
+            SoundFX.win();
+            setTimeout(() => setWinData(null), 3200);
+          } else {
+            SoundFX.loss();
           }
         }
-        prevTotalsRef.current[activeMode] = currentModeData.stats.total;
       }
+      prevTotalsRef.current[activeMode] = currentModeData.stats.total;
+    }
 
-      setLastSync(nowTime());
-    },
-    []
-  );
+    setLastSync(nowTime());
+  }, []);
 
-  // AUTO-DELETE HISTORY & DATA ON INITIAL OPEN, BACK NAVIGATION, OR UNLOAD
+  // AUTO-DELETE HISTORY & DATA ONLY ON INITIAL OPEN, BACK NAVIGATION, OR UNLOAD
+  // (Does NOT re-trigger when switching between 30S and 1M buttons)
   const wipeAndStartFreshSession = useCallback(async () => {
     try {
       localStorage.clear();
@@ -386,12 +335,12 @@ export default function App() {
       });
       if (res.ok) {
         const data = await res.json();
-        applyServerPayload(data, gameMode);
+        applyServerPayload(data, gameModeRef.current);
       }
     } catch {
       // ignore
     }
-  }, [applyServerPayload, gameMode]);
+  }, [applyServerPayload]);
 
   useEffect(() => {
     wipeAndStartFreshSession();
@@ -442,7 +391,6 @@ export default function App() {
     }
   }, [applyServerPayload, gameMode]);
 
-  // Poll every 2 seconds for snappy 30S and 1M live sync
   useEffect(() => {
     fetchEngineState();
     if (!autoSync) return;
@@ -476,7 +424,7 @@ export default function App() {
     }
   }, [supportMessages, supportTyping, supportOpen]);
 
-  // Extract active mode state (`30S` or `1M`)
+  // Extract active mode state exclusively from Python backend (`jujustu_core.py`)
   const activeModeObj = modesData[gameMode] || {};
   const stats: EngineStats = activeModeObj.stats || { wins: 0, losses: 0, total: 0 };
   const currentPrediction = activeModeObj.current_prediction || {};
@@ -485,36 +433,26 @@ export default function App() {
   const latestTelemetry: DetailedEngineTelemetry | null =
     activeModeObj.latest_telemetry || null;
 
-  // Core Python Prediction + Strict Same-Side Single Number
+  // 100% Python Script Outputs (Zero client-side prediction logic)
+  const hasPythonPrediction = Boolean(currentPrediction.prediction);
   const predSize: 'BIG' | 'SMALL' = currentPrediction.prediction || 'BIG';
-  const predConf: number = currentPrediction.confidence ?? 92;
-  const predReason: string =
-    currentPrediction.reason || 'momentum BIG + markov(BIG->BIG)';
+  const predConf: number = currentPrediction.confidence ?? 0;
+  const predReason: string = currentPrediction.reason || 'syncing python script...';
   const periodIdStr: string = currentPrediction.period
     ? `#${currentPrediction.period}`
     : '#SYNCING';
 
-  const sameSideTarget = useMemo(
-    () =>
-      ensureStrictSameSideSingleNumber(
-        predSize,
-        currentPrediction.singleNumber,
-        latestTelemetry
-      ),
-    [predSize, currentPrediction.singleNumber, latestTelemetry]
+  const singlePredNum = getValidatedSameSideNumber(
+    predSize,
+    currentPrediction.singleNumber
   );
-
-  // Strictly locked to the same side as predSize (never changes on matrix click, never opposite)
-  const singlePredNum = sameSideTarget.predictedNumber;
-  const displayColour = sameSideTarget.predictedColour;
 
   const handleClearSessionNow = async () => {
     SoundFX.click();
     await wipeAndStartFreshSession();
-    showToast('Session History & Data Auto-Cleared');
+    showToast('Session History Cleared & Re-Synced with Python Engine');
   };
 
-  // Support Chat Send
   const handleSendSupport = (preset?: string) => {
     const text = (preset ?? supportInput).trim();
     if (!text || supportTyping) return;
@@ -527,43 +465,34 @@ export default function App() {
     setSupportTyping(true);
 
     setTimeout(() => {
-      const t = text.toLowerCase();
-      let reply = '';
-      if (t.includes('30') || t.includes('1m') || t.includes('api')) {
-        reply = `JUJUTSU SCRIPT V3 दोनों लाइव API से रियल-टाइम सिंक है:\n• WinGo 30S (30 सेकंड)\n• WinGo 1M (1 मिनट)\nआप ऊपर दिए गए बटन से कभी भी 30 SEC या 1 MIN मोड बदल सकते हैं।`;
-      } else if (t.includes('number') || t.includes('single') || t.includes('opposite')) {
-        reply = `यह इंजन कभी भी Opposite नंबर नहीं देता! हमेशा 100% Same-Side Single Number देता है:\n• BIG होने पर केवल 5, 6, 7, 8, या 9 (अभी: #${singlePredNum})\n• SMALL होने पर केवल 0, 1, 2, 3, या 4।`;
-      } else {
-        reply = `अभी WinGo ${gameMode} (${periodIdStr}) के लिए लाइव ऑटो-प्रेडिक्शन: ${predSize} | Same-Side Single Number: #${singlePredNum} (${predConf}% Confidence, Logic: ${predReason}) है।`;
-      }
+      const reply = `JUJUTSU SCRIPT V3 (WinGo ${gameMode} • ${periodIdStr}):\n• Python Output: ${predSize} (Same-Side Single #${singlePredNum})\n• Python Logic: ${predReason}\n• Python Confidence: ${predConf}%\n• यह 100% केवल आपकी Python Script के diablo_premium_predictor से ही चलता है।`;
       setSupportMessages((prev) => [
         ...prev,
         { id: `ai_${Date.now()}`, sender: 'ai', text: reply, timestamp: nowTime() },
       ]);
       setSupportTyping(false);
       SoundFX.success();
-    }, 500);
+    }, 450);
   };
 
-  // 10-Node Matrix Frequencies
+  // Real 10-Node Matrix Frequencies from live API history (`lastResultsInts`)
   const nodeFrequencies = useMemo(() => {
     const counts = Array(10).fill(0);
     lastResultsInts.forEach((n) => {
       if (n >= 0 && n <= 9) counts[n]++;
     });
-    const total = Math.max(1, lastResultsInts.length);
+    const total = lastResultsInts.length;
     return Array.from({ length: 10 }, (_, num) => {
-      const rawPct = Math.round((counts[num] / total) * 100);
-      const prob = rawPct > 0 ? rawPct : [12, 8, 6, 9, 7, 8, 10, 11, 9, 10][num];
+      const prob = total > 0 ? Math.round((counts[num] / total) * 100) : 0;
       const type =
         num === 0 || num === 5 ? 'violet' : num % 2 === 1 ? 'green' : 'red';
-      return { num, prob, type };
+      return { num, prob, type, count: counts[num] };
     });
   }, [lastResultsInts]);
 
-  // BIG vs SMALL Win Rates
+  // Real BIG vs SMALL Ratios from live API history (`lastResultsInts`)
   const { bigWinRate, smallWinRate } = useMemo(() => {
-    if (lastResultsInts.length === 0) return { bigWinRate: 52, smallWinRate: 48 };
+    if (lastResultsInts.length === 0) return { bigWinRate: 0, smallWinRate: 0 };
     const bigs = lastResultsInts.filter((n) => n >= 5).length;
     const bPct = Math.round((bigs / lastResultsInts.length) * 100);
     return { bigWinRate: bPct, smallWinRate: 100 - bPct };
@@ -594,21 +523,6 @@ export default function App() {
   const dashOffset = 125.66 - (countdown / maxCycleSeconds) * 125.66;
   const shortId = periodIdStr.replace('#', '').slice(-6);
 
-  // Display values strictly using Same-Side Single Number
-  const playLabel =
-    focusedTarget === 'COLOUR'
-      ? displayColour
-      : focusedTarget === 'NUMBER'
-      ? `NUMBER #${singlePredNum}`
-      : predSize;
-
-  const playSub =
-    focusedTarget === 'COLOUR'
-      ? `SAME-SIDE #${singlePredNum} (${predSize}) • ${predReason}`
-      : focusedTarget === 'NUMBER'
-      ? `100% SAME-SIDE ${predSize} (${predSize === 'BIG' ? '5-9' : '0-4'}) • ${displayColour} • ${predReason}`
-      : `SAME-SIDE SINGLE #${singlePredNum} (${predSize === 'BIG' ? '5-9' : '0-4'}) • ${predReason}`;
-
   const overallAccuracy =
     stats.total > 0 ? Math.round((stats.wins / stats.total) * 100) : 100;
 
@@ -621,7 +535,7 @@ export default function App() {
   return (
     <div className="app-shell">
       <div className="app-inner">
-        {/* STICKY HEADER — ONLY JUJUTSU SCRIPT BRANDING */}
+        {/* STICKY GLASS HEADER — ONLY JUJUTSU SCRIPT BRANDING */}
         <header className="header">
           <div className="header-row">
             <div className="header-left">
@@ -739,21 +653,21 @@ export default function App() {
               {notifOpen && (
                 <div className="notif-dd">
                   <div className="notif-head">
-                    <b>JUJUTSU SCRIPT ({gameMode})</b>
-                    <span>Live API Sync</span>
+                    <b>JUJUTSU PYTHON CORE ({gameMode})</b>
+                    <span>100% Script Logic</span>
                   </div>
                   <div className="notif-body">
                     <div className="notif-item">
-                      <div className="t">⚡ Auto-Prediction Locked</div>
+                      <div className="t">🐍 Python Script Output</div>
                       <div className="d">
                         WinGo {gameMode} {periodIdStr}: <b>{predSize}</b> (Same-Side Single:{' '}
-                        <b>#{singlePredNum}</b>) · {predConf}% Confidence.
+                        <b>#{singlePredNum}</b>) · {predConf}% ({predReason}).
                       </div>
                     </div>
                     <div className="notif-item">
-                      <div className="t">🛡️ Dual Live API Connected</div>
+                      <div className="t">💎 Glass Form Premium</div>
                       <div className="d">
-                        Synced with WinGo_30S &amp; WinGo_1M live endpoints. Session wipes on exit.
+                        Synced with WinGo_30S &amp; WinGo_1M APIs. Zero client-side override.
                       </div>
                     </div>
                   </div>
@@ -765,19 +679,26 @@ export default function App() {
           <div className="status-strip">
             <div className="pill live">
               <span className="dot pulse" />
-              WINGO {gameMode} LIVE · <span>SAME-SIDE SINGLE #{singlePredNum}</span>
+              PYTHON 3 ENGINE · WINGO {gameMode} ·{' '}
+              <span>
+                {hasPythonPrediction ? `${predSize} (#${singlePredNum})` : 'SYNCING...'}
+              </span>
             </div>
             <div className="pill free">
               <span>
-                {stats.wins}W / {stats.losses}L · {overallAccuracy}% ACCURACY
+                {stats.wins}W / {stats.losses}L · {overallAccuracy}% WIN RATE
               </span>
             </div>
           </div>
         </header>
 
-        {/* 3 MAIN TABS BAR (Dashboard, Engine, My — Patterns & Live Draw Removed) */}
+        {/* 3 GLASS TABS BAR (Dashboard, Engine, My) */}
         <div className="tabs-wrap">
-          <div className="tabs" role="tablist" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)' }}>
+          <div
+            className="tabs"
+            role="tablist"
+            style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)' }}
+          >
             {(
               [
                 { id: 'dashboard', label: '1. Dashboard' },
@@ -809,37 +730,42 @@ export default function App() {
             </div>
           )}
 
-          {/* DUAL GAME MODE SWITCHER (30 SEC vs 1 MIN LIVE API) */}
+          {/* DUAL GAME MODE GLASS SWITCHER (30 SEC vs 1 MIN LIVE API) */}
           <div
+            className="card"
             style={{
               display: 'grid',
               gridTemplateColumns: '1fr 1fr',
               gap: 8,
-              background: '#120609',
               padding: 6,
-              borderRadius: 14,
-              border: '1px solid rgba(220,38,38,.3)',
+              borderRadius: 16,
             }}
           >
             <button
               onClick={() => {
                 SoundFX.click();
                 setGameMode('30S');
-                showToast('Switched to WinGo 30 Seconds Live API');
+                showToast('WinGo 30 Seconds Live API Active');
               }}
               style={{
-                padding: '9px 12px',
-                borderRadius: 10,
+                padding: '10px 12px',
+                borderRadius: 12,
                 fontWeight: 900,
                 fontSize: 12,
                 fontFamily: 'JetBrains Mono, monospace',
                 background:
                   gameMode === '30S'
-                    ? 'linear-gradient(135deg,#dc2626,#ff1744)'
-                    : 'transparent',
-                color: gameMode === '30S' ? '#ffffff' : '#fca5a5',
+                    ? 'linear-gradient(135deg, rgba(255,23,68,.9), rgba(220,38,38,.85))'
+                    : 'rgba(255,255,255,.03)',
+                color: gameMode === '30S' ? '#ffffff' : '#fecdd3',
+                border:
+                  gameMode === '30S'
+                    ? '1px solid rgba(255,255,255,.35)'
+                    : '1px solid transparent',
                 boxShadow:
-                  gameMode === '30S' ? '0 4px 14px rgba(220,38,38,.45)' : 'none',
+                  gameMode === '30S'
+                    ? '0 6px 18px rgba(255,23,68,.45), inset 0 1px 0 rgba(255,255,255,.35)'
+                    : 'none',
                 transition: 'all .18s',
               }}
             >
@@ -849,21 +775,27 @@ export default function App() {
               onClick={() => {
                 SoundFX.click();
                 setGameMode('1M');
-                showToast('Switched to WinGo 1 Minute Live API');
+                showToast('WinGo 1 Minute Live API Active');
               }}
               style={{
-                padding: '9px 12px',
-                borderRadius: 10,
+                padding: '10px 12px',
+                borderRadius: 12,
                 fontWeight: 900,
                 fontSize: 12,
                 fontFamily: 'JetBrains Mono, monospace',
                 background:
                   gameMode === '1M'
-                    ? 'linear-gradient(135deg,#dc2626,#ff1744)'
-                    : 'transparent',
-                color: gameMode === '1M' ? '#ffffff' : '#fca5a5',
+                    ? 'linear-gradient(135deg, rgba(255,23,68,.9), rgba(220,38,38,.85))'
+                    : 'rgba(255,255,255,.03)',
+                color: gameMode === '1M' ? '#ffffff' : '#fecdd3',
+                border:
+                  gameMode === '1M'
+                    ? '1px solid rgba(255,255,255,.35)'
+                    : '1px solid transparent',
                 boxShadow:
-                  gameMode === '1M' ? '0 4px 14px rgba(220,38,38,.45)' : 'none',
+                  gameMode === '1M'
+                    ? '0 6px 18px rgba(255,23,68,.45), inset 0 1px 0 rgba(255,255,255,.35)'
+                    : 'none',
                 transition: 'all .18s',
               }}
             >
@@ -874,7 +806,7 @@ export default function App() {
           {/* ==================== TAB 1: DASHBOARD ==================== */}
           {activeTab === 'dashboard' && (
             <div className="tab-pane active">
-              {/* Forecast Card */}
+              {/* Forecast Glass Card */}
               <div className="card forecast">
                 <div className="forecast-head">
                   <div className="forecast-title">
@@ -895,7 +827,7 @@ export default function App() {
                     </span>
                     <span className="live-badge">
                       <span className="dot" />
-                      {gameMode === '30S' ? '30 SEC API' : '1 MIN API'}
+                      {gameMode === '30S' ? '30S API' : '1M API'}
                     </span>
                   </div>
                   <button
@@ -906,7 +838,7 @@ export default function App() {
                       showToast(!autoSync ? 'Auto-Sync Active' : 'Auto-Sync Paused');
                     }}
                   >
-                    <span>● AUTO PREDICTION ON</span>
+                    <span>● PYTHON AUTO ON</span>
                   </button>
                 </div>
 
@@ -919,16 +851,17 @@ export default function App() {
                           height: 6,
                           borderRadius: '50%',
                           background: '#ff1744',
+                          boxShadow: '0 0 6px #ff1744',
                         }}
                       />
-                      PERIOD NUMBER ({gameMode})
+                      TARGET PERIOD ({gameMode})
                     </div>
                     <div className="period-num">
                       {prefix}
                       {highlight}
                     </div>
                     <div className="period-sub">
-                      <span className="muted">JUJUTSU SCRIPT V3</span> · WINGO {gameMode}
+                      <span className="muted">PYTHON 3 CORE</span> · WINGO {gameMode}
                     </div>
                   </div>
 
@@ -938,15 +871,15 @@ export default function App() {
                         cx="24"
                         cy="24"
                         r="20"
-                        stroke="#22090e"
+                        stroke="rgba(255,255,255,.1)"
                         strokeWidth="3.5"
-                        fill="#0c0406"
+                        fill="rgba(0,0,0,.35)"
                       />
                       <circle
                         cx="24"
                         cy="24"
                         r="20"
-                        stroke={urgent ? '#ff1744' : '#dc2626'}
+                        stroke={urgent ? '#fde047' : '#ff1744'}
                         strokeWidth="3.5"
                         strokeLinecap="round"
                         fill="none"
@@ -963,7 +896,7 @@ export default function App() {
                   </div>
 
                   <div className="trend-box">
-                    <span className="trend-label">SAME-SIDE LOCK</span>
+                    <span className="trend-label">PYTHON OUTPUT</span>
                     <div className="trend-bars">
                       <i style={{ height: '45%' }} />
                       <i style={{ height: '70%' }} />
@@ -972,65 +905,51 @@ export default function App() {
                       <i style={{ height: '100%' }} />
                     </div>
                     <span className="trend-val">
-                      {predSize} #{singlePredNum}
+                      {hasPythonPrediction ? `${predSize} #${singlePredNum}` : 'SYNC'}
                     </span>
                   </div>
                 </div>
               </div>
 
-              {/* 3-Way Focus Switch (Strictly Same-Side Single Number) */}
+              {/* Live Readout of Top 3 Python Logics (`momentum`, `markov`, `master_calculation`) */}
               <div className="ct-focusV2">
-                <button
-                  className={focusedTarget === 'SIZE' ? 'active' : ''}
-                  onClick={() => {
-                    SoundFX.click();
-                    setFocusedTarget('SIZE');
-                  }}
-                >
-                  <span className="t">SIZE SIGNAL</span>
-                  <span className="s">{predSize}</span>
-                  <div className="dotline">
-                    <i style={{ width: `${predConf}%` }} />
-                  </div>
-                </button>
-                <button
-                  className={focusedTarget === 'NUMBER' ? 'active' : ''}
-                  onClick={() => {
-                    SoundFX.click();
-                    setFocusedTarget('NUMBER');
-                  }}
-                >
-                  <span className="t">SAME-SIDE NO.</span>
+                <button className="active" style={{ cursor: 'default' }}>
+                  <span className="t">MOMENTUM (2.5x)</span>
                   <span className="s">
-                    #{singlePredNum} ({predSize})
+                    {latestTelemetry?.sub_engines.momentum.pred || predSize}
                   </span>
                   <div className="dotline">
                     <i style={{ width: `${predConf}%` }} />
                   </div>
                 </button>
-                <button
-                  className={focusedTarget === 'COLOUR' ? 'active' : ''}
-                  onClick={() => {
-                    SoundFX.click();
-                    setFocusedTarget('COLOUR');
-                  }}
-                >
-                  <span className="t">COLOR SIGNAL</span>
-                  <span className="s">{displayColour}</span>
+                <button className="active" style={{ cursor: 'default' }}>
+                  <span className="t">MARKOV DECAY (2.0x)</span>
+                  <span className="s">
+                    {latestTelemetry?.sub_engines.markov.pred || predSize}
+                  </span>
+                  <div className="dotline">
+                    <i style={{ width: `${predConf}%` }} />
+                  </div>
+                </button>
+                <button className="active" style={{ cursor: 'default' }}>
+                  <span className="t">MASTER CALC (5-M)</span>
+                  <span className="s">
+                    {latestTelemetry?.sub_engines.master.final_prediction || predSize}
+                  </span>
                   <div className="dotline">
                     <i style={{ width: `${predConf}%` }} />
                   </div>
                 </button>
               </div>
 
-              {/* ULTRA PREDICTION BOX — ALWAYS AUTO, STRICT SAME-SIDE SINGLE NUMBER */}
+              {/* ULTRA PREDICTION GLASS STAGE — 100% PYTHON SCRIPT OUTPUT ONLY */}
               <div className="ultra-pred">
                 <div className="ultra-top">
                   <div className="ultra-top-left">
                     <span className="ultra-live" />
-                    JUJUTSU SCRIPT V3 • WINGO {gameMode} AUTO SIGNAL
+                    DIABLO_PREMIUM_PREDICTOR • WINGO {gameMode}
                   </div>
-                  <div className="ultra-period">#{shortId} • SAME-SIDE LOCKED</div>
+                  <div className="ultra-period">#{shortId} • PYTHON 3</div>
                 </div>
                 <div className="ultra-stage">
                   <div className="ultra-rings">
@@ -1041,65 +960,43 @@ export default function App() {
 
                   <div className="ultra-label">
                     {scanningPulse
-                      ? `AUTO-CALIBRATING WINGO ${gameMode} NEXT PERIOD...`
-                      : `SAME-SIDE PREDICTION • ${predSize} (${
-                          predSize === 'BIG' ? '5-9' : '0-4'
-                        }) • SINGLE #${singlePredNum}`}
+                      ? `RUNNING PYTHON SCRIPT FOR WINGO ${gameMode}...`
+                      : `100% PYTHON SCRIPT PREDICTION • SAME-SIDE SINGLE #${singlePredNum}`}
                   </div>
-                  <div className="ultra-value">{playLabel}</div>
-                  <div className="ultra-sub">{playSub}</div>
+                  <div className="ultra-value">
+                    {hasPythonPrediction ? predSize : 'SYNCING...'}
+                  </div>
+                  <div className="ultra-sub">
+                    LOGIC: {predReason} • SAME-SIDE SINGLE #{singlePredNum} (
+                    {predSize === 'BIG' ? '5-9' : '0-4'})
+                  </div>
 
-                  {/* Single Same-Side Ball Display */}
+                  {/* Same-Side Single Ball from Python's master_calculation_prediction */}
                   <div className="ultra-balls">
-                    {focusedTarget === 'COLOUR' ? (
-                      <div
-                        style={{
-                          width: 68,
-                          height: 68,
-                          borderRadius: '50%',
-                          background:
-                            displayColour === 'RED'
-                              ? 'radial-gradient(circle at 35% 35%,#f87171,#dc2626)'
-                              : 'radial-gradient(circle at 35% 35%,#34d399,#059669)',
-                          boxShadow: '0 8px 24px rgba(220,38,38,.45)',
-                          border: '2.5px solid #fff',
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                          fontFamily: 'JetBrains Mono, monospace',
-                          fontWeight: 900,
-                          fontSize: 22,
-                          color: '#fff',
-                        }}
-                      >
-                        {singlePredNum}
-                      </div>
-                    ) : (
-                      <BallImage
-                        num={singlePredNum}
-                        style={{ width: 74, height: 74 }}
-                      />
-                    )}
+                    <BallImage
+                      num={singlePredNum}
+                      style={{ width: 76, height: 76 }}
+                    />
                   </div>
 
                   <div className="ultra-chips">
                     <div className="ultra-chip">
-                      <b>{predConf}%</b>
-                      <span>CONFIDENCE</span>
+                      <b>{predSize}</b>
+                      <span>DIABLO SIGNAL</span>
                     </div>
                     <div className="ultra-chip">
                       <b>#{singlePredNum}</b>
-                      <span>SAME-SIDE ({predSize})</span>
+                      <span>SAME-SIDE ({predSize === 'BIG' ? '5-9' : '0-4'})</span>
                     </div>
                     <div className="ultra-chip">
-                      <b>{predSize}</b>
-                      <span>DIABLO CORE</span>
+                      <b>{predConf}%</b>
+                      <span>PYTHON CONFIDENCE</span>
                     </div>
                   </div>
 
                   <div className="ultra-meter">
                     <div className="ultra-meter-top">
-                      <span>WIN PROBABILITY ({gameMode})</span>
+                      <span>PYTHON ENSEMBLE CONFIDENCE ({predReason})</span>
                       <span>{predConf}%</span>
                     </div>
                     <div className="ultra-bar">
@@ -1109,125 +1006,33 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Active Target Bar */}
+              {/* Active Python Engine Status Bar */}
               <div className="ct-miniV2">
                 <b>
-                  ⚡ AUTO LOCKED: {predSize} · SAME-SIDE SINGLE #{singlePredNum}
+                  🐍 PYTHON SCRIPT LOCKED: {predSize} · SINGLE #{singlePredNum}
                 </b>
                 <div className="focus-mini-switch">
-                  {(['SIZE', 'NUMBER', 'COLOUR'] as const).map((tMode) => (
-                    <button
-                      key={tMode}
-                      className={focusedTarget === tMode ? 'active' : ''}
-                      onClick={() => {
-                        SoundFX.click();
-                        setFocusedTarget(tMode);
-                      }}
-                    >
-                      {tMode === 'COLOUR' ? 'COLOR' : tMode}
-                    </button>
-                  ))}
+                  <button className="active" style={{ cursor: 'default' }}>
+                    {predReason}
+                  </button>
                 </div>
               </div>
 
-              {/* Triple Cards — Same-Side Single Number, Color, Size */}
+              {/* Triple Glass Cards — Direct Python Script Outputs (Size, Same-Side Single Number, Votes) */}
               <div className="ct-tripleV2">
-                <div
-                  className={`ct-cardV2 ${focusedTarget === 'NUMBER' ? 'active' : ''}`}
-                  onClick={() => {
-                    SoundFX.click();
-                    setFocusedTarget('NUMBER');
-                  }}
-                >
+                <div className="ct-cardV2 active" style={{ cursor: 'default' }}>
                   <div>
-                    <h4>SAME-SIDE NO.</h4>
-                    {focusedTarget === 'NUMBER' && (
-                      <span className="playnow">ACTIVE</span>
-                    )}
-                  </div>
-                  <div style={{ margin: '8px 0' }}>
-                    <BallImage num={singlePredNum} />
-                  </div>
-                  <div>
-                    <div style={{ fontSize: 10, fontWeight: 800, color: '#fde047' }}>
-                      #{singlePredNum} ({predSize} {predSize === 'BIG' ? '5-9' : '0-4'})
-                    </div>
-                    <button
-                      className={`ct-go ${focusedTarget === 'NUMBER' ? 'on' : ''}`}
-                    >
-                      Single #{singlePredNum}
-                    </button>
-                  </div>
-                </div>
-
-                <div
-                  className={`ct-cardV2 ${focusedTarget === 'COLOUR' ? 'active' : ''}`}
-                  onClick={() => {
-                    SoundFX.click();
-                    setFocusedTarget('COLOUR');
-                  }}
-                >
-                  <div>
-                    <h4>COLOR</h4>
-                    {focusedTarget === 'COLOUR' && (
-                      <span className="playnow">ACTIVE</span>
-                    )}
+                    <h4>PYTHON SIZE</h4>
+                    <span className="playnow">DIABLO CORE</span>
                   </div>
                   <div style={{ margin: '8px 0' }}>
                     <div
                       style={{
-                        width: 50,
-                        height: 50,
-                        margin: '0 auto',
-                        borderRadius: '50%',
-                        background:
-                          displayColour === 'RED'
-                            ? 'radial-gradient(circle at 35% 35%,#f87171,#dc2626)'
-                            : 'radial-gradient(circle at 35% 35%,#34d399,#059669)',
-                        border: '2px solid #fff',
-                        boxShadow: '0 6px 16px rgba(0,0,0,.4)',
-                      }}
-                    />
-                    <div
-                      style={{
-                        fontSize: 14,
-                        fontWeight: 900,
-                        color: displayColour === 'RED' ? '#ff1744' : '#34d399',
-                        marginTop: 5,
-                      }}
-                    >
-                      {displayColour}
-                    </div>
-                  </div>
-                  <div>
-                    <button
-                      className={`ct-go ${focusedTarget === 'COLOUR' ? 'on' : ''}`}
-                    >
-                      {displayColour}
-                    </button>
-                  </div>
-                </div>
-
-                <div
-                  className={`ct-cardV2 ${focusedTarget === 'SIZE' ? 'active' : ''}`}
-                  onClick={() => {
-                    SoundFX.click();
-                    setFocusedTarget('SIZE');
-                  }}
-                >
-                  <div>
-                    <h4>SIZE</h4>
-                    {focusedTarget === 'SIZE' && (
-                      <span className="playnow">ACTIVE</span>
-                    )}
-                  </div>
-                  <div style={{ margin: '8px 0' }}>
-                    <div
-                      style={{
-                        fontSize: 24,
+                        fontSize: 25,
                         fontWeight: 900,
                         color: '#fde047',
                         fontFamily: 'JetBrains Mono, monospace',
+                        textShadow: '0 2px 12px rgba(255,23,68,.5)',
                       }}
                     >
                       {predSize}
@@ -1236,7 +1041,7 @@ export default function App() {
                       style={{
                         fontSize: 9.5,
                         fontWeight: 800,
-                        color: '#fca5a5',
+                        color: '#fecdd3',
                         marginTop: 4,
                       }}
                     >
@@ -1244,16 +1049,67 @@ export default function App() {
                     </div>
                   </div>
                   <div>
-                    <button
-                      className={`ct-go ${focusedTarget === 'SIZE' ? 'on' : ''}`}
-                    >
+                    <button className="ct-go on" style={{ cursor: 'default' }}>
                       {predSize}
+                    </button>
+                  </div>
+                </div>
+
+                <div className="ct-cardV2 active" style={{ cursor: 'default' }}>
+                  <div>
+                    <h4>SAME-SIDE NO.</h4>
+                    <span className="playnow">MASTER M1-M5</span>
+                  </div>
+                  <div style={{ margin: '8px 0' }}>
+                    <BallImage num={singlePredNum} />
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 10, fontWeight: 800, color: '#fde047' }}>
+                      #{singlePredNum} ({predSize} {predSize === 'BIG' ? '5-9' : '0-4'})
+                    </div>
+                    <button className="ct-go on" style={{ cursor: 'default' }}>
+                      Single #{singlePredNum}
+                    </button>
+                  </div>
+                </div>
+
+                <div className="ct-cardV2 active" style={{ cursor: 'default' }}>
+                  <div>
+                    <h4>ENSEMBLE VOTES</h4>
+                    <span className="playnow">{predConf}% CONF</span>
+                  </div>
+                  <div style={{ margin: '8px 0' }}>
+                    <div
+                      style={{
+                        fontSize: 14,
+                        fontWeight: 900,
+                        color: '#ffffff',
+                        fontFamily: 'JetBrains Mono, monospace',
+                      }}
+                    >
+                      B: {latestTelemetry?.votes.BIG.toFixed(1) ?? '0.0'}
+                    </div>
+                    <div
+                      style={{
+                        fontSize: 14,
+                        fontWeight: 900,
+                        color: '#fda4af',
+                        fontFamily: 'JetBrains Mono, monospace',
+                        marginTop: 4,
+                      }}
+                    >
+                      S: {latestTelemetry?.votes.SMALL.toFixed(1) ?? '0.0'}
+                    </div>
+                  </div>
+                  <div>
+                    <button className="ct-go on" style={{ cursor: 'default' }}>
+                      {predConf}% Score
                     </button>
                   </div>
                 </div>
               </div>
 
-              {/* 4 Metrics Strip */}
+              {/* 4 Glass Metrics Strip */}
               <div className="metrics">
                 <div className="metric">
                   <div className="metric-top">
@@ -1287,10 +1143,7 @@ export default function App() {
                     <span>LAST 4 DRAWS</span>
                   </div>
                   <div className="streak-balls">
-                    {(lastResultsInts.length >= 4
-                      ? lastResultsInts.slice(-4)
-                      : [7, 8, 9, 5]
-                    ).map((num, idx) => (
+                    {lastResultsInts.slice(-4).map((num, idx) => (
                       <span key={idx}>{num}</span>
                     ))}
                   </div>
@@ -1322,10 +1175,10 @@ export default function App() {
                         : num % 2 === 1
                         ? 'green'
                         : 'red';
-                    const safeSingle = ensureStrictSameSideSingleNumber(
+                    const safeSingle = getValidatedSameSideNumber(
                       item.pred,
                       item.singleNumber
-                    ).predictedNumber;
+                    );
 
                     return (
                       <div key={`${item.period}-${idx}`} className="hist-row">
@@ -1362,10 +1215,10 @@ export default function App() {
             </div>
           )}
 
-          {/* ==================== TAB 2: ENGINE (ALL ANALYTICS & CORE LOGICS) ==================== */}
+          {/* ==================== TAB 2: ENGINE (ALL ANALYTICS & PYTHON CORE LOGICS) ==================== */}
           {activeTab === 'engine' && (
             <div className="tab-pane active">
-              {/* 10-Node Analysis Matrix (Moved from below Dashboard History as requested) */}
+              {/* 10-Node Analysis Matrix */}
               <div className="card matrix">
                 <div className="matrix-head">
                   <div className="matrix-title">
@@ -1418,7 +1271,7 @@ export default function App() {
                             <i
                               style={{
                                 background: 'linear-gradient(90deg,#dc2626,#ff1744)',
-                                width: `${Math.min(100, n.prob * 5)}%`,
+                                width: `${Math.min(100, n.prob * 3)}%`,
                               }}
                             />
                           </div>
@@ -1441,7 +1294,7 @@ export default function App() {
                             <i
                               style={{
                                 background: 'linear-gradient(90deg,#dc2626,#ff1744)',
-                                width: `${Math.min(100, n.prob * 5)}%`,
+                                width: `${Math.min(100, n.prob * 3)}%`,
                               }}
                             />
                           </div>
@@ -1454,8 +1307,8 @@ export default function App() {
                     <div className="grid-table-head">
                       <span>Node</span>
                       <span>Side &amp; Color</span>
-                      <span>Weight</span>
-                      <span style={{ textAlign: 'right' }}>Status</span>
+                      <span>API Freq</span>
+                      <span style={{ textAlign: 'right' }}>Python</span>
                     </div>
                     <div className="grid-table-body">
                       {nodeFrequencies.map((n) => {
@@ -1477,7 +1330,7 @@ export default function App() {
                                 <i
                                   style={{
                                     background: '#dc2626',
-                                    width: `${Math.min(100, n.prob * 5)}%`,
+                                    width: `${Math.min(100, n.prob * 3)}%`,
                                   }}
                                 />
                               </div>
@@ -1511,13 +1364,13 @@ export default function App() {
                 </div>
               </div>
 
-              {/* BIG vs SMALL Win Rates (Moved from below Dashboard History as requested) */}
+              {/* BIG vs SMALL Win Rates */}
               <div className="winrates">
                 <div className="card winrate">
                   <div className="winrate-head">
                     <span className="winrate-title">BIG (5 - 9)</span>
                     <span className="winrate-pct blue">
-                      <span className="lbl">FREQUENCY</span> {bigWinRate}%
+                      <span className="lbl">API RATIO</span> {bigWinRate}%
                     </span>
                   </div>
                   <div className="winrate-bar">
@@ -1525,13 +1378,20 @@ export default function App() {
                   </div>
                   <div className="winrate-foot">
                     <div className="winrate-checks">
-                      <div className="winrate-check">✓ Master Calculation</div>
-                      <div className="winrate-check">✓ Markov Chain Decay</div>
-                      <div className="winrate-check">✓ Diablo Ensemble</div>
+                      <div className="winrate-check">✓ master_calculation_prediction</div>
+                      <div className="winrate-check">✓ markov_chain_decay</div>
+                      <div className="winrate-check">✓ diablo_premium_predictor</div>
                     </div>
                     <div className="winrate-ring">
                       <svg viewBox="0 0 36 36">
-                        <circle cx="18" cy="18" r="15" stroke="#24090e" strokeWidth="3" fill="none" />
+                        <circle
+                          cx="18"
+                          cy="18"
+                          r="15"
+                          stroke="rgba(255,255,255,.12)"
+                          strokeWidth="3"
+                          fill="none"
+                        />
                         <circle
                           cx="18"
                           cy="18"
@@ -1553,7 +1413,7 @@ export default function App() {
                   <div className="winrate-head">
                     <span className="winrate-title">SMALL (0 - 4)</span>
                     <span className="winrate-pct green">
-                      <span className="lbl">FREQUENCY</span> {smallWinRate}%
+                      <span className="lbl">API RATIO</span> {smallWinRate}%
                     </span>
                   </div>
                   <div className="winrate-bar">
@@ -1561,13 +1421,20 @@ export default function App() {
                   </div>
                   <div className="winrate-foot">
                     <div className="winrate-checks">
-                      <div className="winrate-check">✓ Master Calculation</div>
-                      <div className="winrate-check">✓ Markov Chain Decay</div>
-                      <div className="winrate-check">✓ Diablo Ensemble</div>
+                      <div className="winrate-check">✓ master_calculation_prediction</div>
+                      <div className="winrate-check">✓ markov_chain_decay</div>
+                      <div className="winrate-check">✓ diablo_premium_predictor</div>
                     </div>
                     <div className="winrate-ring">
                       <svg viewBox="0 0 36 36">
-                        <circle cx="18" cy="18" r="15" stroke="#24090e" strokeWidth="3" fill="none" />
+                        <circle
+                          cx="18"
+                          cy="18"
+                          r="15"
+                          stroke="rgba(255,255,255,.12)"
+                          strokeWidth="3"
+                          fill="none"
+                        />
                         <circle
                           cx="18"
                           cy="18"
@@ -1586,11 +1453,11 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Recent 20 Draws Trend & Engine Telemetry (Moved from below Dashboard History) */}
+              {/* Recent 20 Draws Trend & Python Engine Telemetry */}
               <div className="trend-grid">
                 <div className="card trend-chart">
                   <div className="trend-chart-title">
-                    📈 RECENT TREND <span className="muted">(LAST 20 DRAWS · {gameMode})</span>
+                    📈 RECENT API DRAWS <span className="muted">(WINGO {gameMode})</span>
                   </div>
                   <div className="trend-svg-wrap">
                     <svg className="trend-svg" viewBox="0 0 240 48" preserveAspectRatio="none">
@@ -1599,7 +1466,7 @@ export default function App() {
                         y1="24"
                         x2="240"
                         y2="24"
-                        stroke="rgba(220,38,38,.25)"
+                        stroke="rgba(255,255,255,.2)"
                         strokeWidth="1"
                         strokeDasharray="3 3"
                       />
@@ -1634,40 +1501,48 @@ export default function App() {
 
                 <div className="card insight">
                   <div>
-                    <div className="insight-title">💡 DIABLO ENSEMBLE VOTES</div>
+                    <div className="insight-title">🐍 PYTHON DIABLO VOTES</div>
                     <p className="insight-text">
-                      Active Signal: <b>{predSize}</b> (Same-Side Single <b>#{singlePredNum}</b>) via{' '}
+                      Python Output: <b>{predSize}</b> (Same-Side Single <b>#{singlePredNum}</b>) via{' '}
                       <b>{predReason}</b>.
                     </p>
                   </div>
-                  <div style={{ fontSize: 11, fontFamily: 'JetBrains Mono, monospace', color: '#fde047', fontWeight: 800, marginTop: 6 }}>
-                    BIG Weight: {latestTelemetry?.votes.BIG.toFixed(1) ?? '4.5'} · SMALL Weight: {latestTelemetry?.votes.SMALL.toFixed(1) ?? '3.5'}
+                  <div
+                    style={{
+                      fontSize: 11,
+                      fontFamily: 'JetBrains Mono, monospace',
+                      color: '#fde047',
+                      fontWeight: 800,
+                      marginTop: 6,
+                    }}
+                  >
+                    BIG Weight: {latestTelemetry?.votes.BIG.toFixed(1) ?? '0.0'} · SMALL Weight:{' '}
+                    {latestTelemetry?.votes.SMALL.toFixed(1) ?? '0.0'}
                   </div>
                 </div>
               </div>
 
-              {/* Diablo Pattern AI Sub-Engines */}
+              {/* Diablo Pattern AI Sub-Engines (Direct from jujustu_core.py) */}
               <div className="card section">
                 <div className="section-head">
                   <div className="section-title">
-                    ✨ Diablo Pattern AI Sub-Engines (Live {gameMode})
+                    🐍 Python Script Sub-Engines (`jujustu_core.py` · {gameMode})
                   </div>
-                  <span className="tag">4 ADVANCED LOGICS</span>
+                  <span className="tag">100% PYTHON LOGIC</span>
                 </div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                   <div className="pattern-row">
                     <div>
                       <span className="t">
-                        Momentum Engine (`momentum_prediction` · Weight 2.5x)
+                        Momentum (`momentum_prediction` · Weight 2.5x)
                       </span>
                       <span className="s">
-                        Active streak:{' '}
-                        {latestTelemetry?.sub_engines.momentum.current_streak ?? 1}{' '}
-                        consecutive rounds
+                        Reason: {latestTelemetry?.sub_engines.momentum.reason ?? '—'} (Streak:{' '}
+                        {latestTelemetry?.sub_engines.momentum.current_streak ?? 0})
                       </span>
                     </div>
                     <span className="m blue">
-                      {latestTelemetry?.sub_engines.momentum.pred ?? predSize}
+                      {latestTelemetry?.sub_engines.momentum.pred ?? '—'}
                     </span>
                   </div>
 
@@ -1677,12 +1552,13 @@ export default function App() {
                         Markov Chain Decay (`markov_chain_decay` · Weight 2.0x)
                       </span>
                       <span className="s">
-                        Weighted BIG: {latestTelemetry?.sub_engines.markov.weighted_big ?? 12} pts · Weighted SMALL:{' '}
-                        {latestTelemetry?.sub_engines.markov.weighted_small ?? 10} pts
+                        {latestTelemetry?.sub_engines.markov.reason ?? '—'} · BIG:{' '}
+                        {latestTelemetry?.sub_engines.markov.weighted_big ?? 0} / SMALL:{' '}
+                        {latestTelemetry?.sub_engines.markov.weighted_small ?? 0}
                       </span>
                     </div>
                     <span className="m amber">
-                      {latestTelemetry?.sub_engines.markov.pred ?? predSize}
+                      {latestTelemetry?.sub_engines.markov.pred ?? '—'}
                     </span>
                   </div>
 
@@ -1692,28 +1568,42 @@ export default function App() {
                         Frequency Balance (`freq_balance_prediction` · Weight 1.5x)
                       </span>
                       <span className="s">
-                        10-Round Ratio:{' '}
-                        {latestTelemetry?.sub_engines.freq_balance.big_count ?? 5}B /{' '}
-                        {latestTelemetry?.sub_engines.freq_balance.small_count ?? 5}S
+                        {latestTelemetry?.sub_engines.freq_balance.reason ?? '—'} (
+                        {latestTelemetry?.sub_engines.freq_balance.big_count ?? 0}B /{' '}
+                        {latestTelemetry?.sub_engines.freq_balance.small_count ?? 0}S)
                       </span>
                     </div>
                     <span className="m blue">
-                      {latestTelemetry?.sub_engines.freq_balance.pred ?? predSize}
+                      {latestTelemetry?.sub_engines.freq_balance.pred ?? '—'}
                     </span>
                   </div>
 
                   <div className="pattern-row">
                     <div>
                       <span className="t">
-                        Streak Break Detector (`streak_break_prediction` · Priority Lock)
+                        Hybrid Logic (`hybrid_prediction` · Weight 1.0x)
                       </span>
                       <span className="s">
-                        Run length:{' '}
-                        {latestTelemetry?.sub_engines.streak_break.current_streak ?? 1}{' '}
-                        / 4 threshold
+                        Old Core Logic 2 (`stable_logic` + transition rules)
                       </span>
                     </div>
                     <span className="m amber">
+                      {latestTelemetry?.sub_engines.hybrid.pred ?? '—'}
+                    </span>
+                  </div>
+
+                  <div className="pattern-row">
+                    <div>
+                      <span className="t">
+                        Streak Break (`streak_break_prediction` · Priority Lock)
+                      </span>
+                      <span className="s">
+                        Run length:{' '}
+                        {latestTelemetry?.sub_engines.streak_break.current_streak ?? 0} / 4
+                        threshold
+                      </span>
+                    </div>
+                    <span className="m blue">
                       {latestTelemetry?.sub_engines.streak_break.pred || 'STANDBY'}
                     </span>
                   </div>
@@ -1724,51 +1614,51 @@ export default function App() {
               <div className="card section">
                 <div className="section-head">
                   <div className="section-title">
-                    🧮 Core Logic 1: Master Calculation (`master_calculation_prediction`)
+                    🧮 Core Logic 1: `master_calculation_prediction`
                   </div>
                   <span className="tag">
-                    Output: {latestTelemetry?.sub_engines.master.final_prediction ?? predSize}
+                    Output: {latestTelemetry?.sub_engines.master.final_prediction ?? '—'}
                   </span>
                 </div>
                 <p className="section-desc">
-                  Unaltered 5-Method mathematical matrix running on Period{' '}
-                  <b>{currentPrediction.period}</b>.
+                  Exact 5-Method Python calculation running on Period{' '}
+                  <b>{latestTelemetry?.period_number || currentPrediction.period}</b>.
                 </p>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                   {[
                     {
                       label: 'Method 1 (Base + History + Mod + Mean)',
-                      val: latestTelemetry?.sub_engines.master.method1 ?? 6,
-                      res: latestTelemetry?.sub_engines.master.results[0] ?? 'BIG',
+                      val: latestTelemetry?.sub_engines.master.method1,
+                      res: latestTelemetry?.sub_engines.master.results?.[0],
                     },
                     {
                       label: 'Method 2 (Shift + 3-Round Trend)',
-                      val: latestTelemetry?.sub_engines.master.method2 ?? 4,
-                      res: latestTelemetry?.sub_engines.master.results[1] ?? 'SMALL',
+                      val: latestTelemetry?.sub_engines.master.method2,
+                      res: latestTelemetry?.sub_engines.master.results?.[1],
                     },
                     {
                       label: 'Method 3 (Mirror Reverse Factor)',
-                      val: latestTelemetry?.sub_engines.master.method3 ?? 8,
-                      res: latestTelemetry?.sub_engines.master.results[2] ?? 'BIG',
+                      val: latestTelemetry?.sub_engines.master.method3,
+                      res: latestTelemetry?.sub_engines.master.results?.[2],
                     },
                     {
                       label: 'Method 4 (5-Point Weighted Vector)',
-                      val: latestTelemetry?.sub_engines.master.method4 ?? 5,
-                      res: latestTelemetry?.sub_engines.master.results[3] ?? 'BIG',
+                      val: latestTelemetry?.sub_engines.master.method4,
+                      res: latestTelemetry?.sub_engines.master.results?.[3],
                     },
                     {
                       label: 'Method 5 (Chaos Prime Tie-Breaker)',
-                      val: latestTelemetry?.sub_engines.master.method5 ?? 7,
-                      res: latestTelemetry?.sub_engines.master.results[4] ?? 'BIG',
+                      val: latestTelemetry?.sub_engines.master.method5,
+                      res: latestTelemetry?.sub_engines.master.results?.[4],
                     },
                   ].map((m, i) => (
                     <div key={i} className="pattern-row">
                       <div>
                         <span className="t">{m.label}</span>
-                        <span className="s">Calculated Digit: {m.val}</span>
+                        <span className="s">Python Digit: {m.val ?? '—'}</span>
                       </div>
                       <span className={`m ${m.res === 'BIG' ? 'blue' : 'amber'}`}>
-                        {m.res}
+                        {m.res ?? '—'}
                       </span>
                     </div>
                   ))}
@@ -1895,7 +1785,7 @@ export default function App() {
                   </svg>
                   <input
                     type="text"
-                    placeholder="Search period or engine reason..."
+                    placeholder="Search period or Python engine reason..."
                     value={search}
                     onChange={(e) => setSearch(e.target.value)}
                   />
@@ -1912,10 +1802,10 @@ export default function App() {
                         : num % 2 === 1
                         ? 'green'
                         : 'red';
-                    const safeSingle = ensureStrictSameSideSingleNumber(
+                    const safeSingle = getValidatedSameSideNumber(
                       item.pred,
                       item.singleNumber
-                    ).predictedNumber;
+                    );
 
                     return (
                       <div key={`${item.period}-${idx}`} className="hist-row">
@@ -1954,17 +1844,18 @@ export default function App() {
               <div className="card section">
                 <div className="section-head">
                   <div className="section-title">
-                    💻 Classic Terminal Output (`render_dashboard` · {gameMode})
+                    💻 Python Terminal Output (`render_dashboard` · {gameMode})
                   </div>
-                  <span className="tag">LIVE CONSOLE</span>
+                  <span className="tag">PYTHON 3 LIVE</span>
                 </div>
                 <div
                   style={{
-                    background: '#080204',
+                    background: 'rgba(5, 1, 3, 0.72)',
+                    backdropFilter: 'blur(16px)',
                     color: '#f8fafc',
                     padding: 14,
-                    borderRadius: 12,
-                    border: '1px solid rgba(220,38,38,.3)',
+                    borderRadius: 14,
+                    border: '1px solid rgba(255,255,255,.16)',
                     fontFamily: 'JetBrains Mono, monospace',
                     fontSize: 11,
                     overflowX: 'auto',
@@ -1979,10 +1870,10 @@ export default function App() {
                   </div>
                   <div
                     style={{
-                      borderBottom: '1px solid rgba(220,38,38,.3)',
+                      borderBottom: '1px solid rgba(255,255,255,.16)',
                       paddingBottom: 4,
                       marginBottom: 6,
-                      color: '#fca5a5',
+                      color: '#fecdd3',
                     }}
                   >
                     PERIOD &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; PRED &nbsp;&nbsp; ACTUAL &nbsp;&nbsp; RESULT &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; WIN RATE
@@ -2016,7 +1907,7 @@ export default function App() {
             </div>
           )}
 
-          {/* FOOTER */}
+          {/* GLASS FOOTER */}
           <footer className="footer">
             <div className="footer-badge">
               <span>🔥</span>
@@ -2025,13 +1916,13 @@ export default function App() {
               <span className="ver">POWER BY @AJAYTREDERKING</span>
             </div>
             <p className="footer-note">
-              WinGo 30S &amp; 1M Live Sync · 100% Same-Side Single Number · Auto-Deletes History on Back/Exit.
+              100% Python Script Engine (`jujustu_core.py`) · WinGo 30S &amp; 1M Live Sync · Glass Form Premium.
             </p>
           </footer>
         </div>
       </div>
 
-      {/* ==================== SIDE MENU DRAWER ==================== */}
+      {/* ==================== SIDE MENU GLASS DRAWER ==================== */}
       {menuOpen && (
         <div
           className="overlay"
@@ -2071,7 +1962,7 @@ export default function App() {
                   <div style={{ fontSize: 13, fontWeight: 800 }}>
                     JUJUTSU SCRIPT V3
                   </div>
-                  <div style={{ fontSize: 10, color: '#fca5a5', fontWeight: 600 }}>
+                  <div style={{ fontSize: 10, color: '#fecdd3', fontWeight: 600 }}>
                     POWER BY @AJAYTREDERKING
                   </div>
                 </div>
@@ -2084,15 +1975,15 @@ export default function App() {
             <div className="modal-body" style={{ gap: 8 }}>
               <div className="unlock-box">
                 <div>
-                  <div className="ttl">🔥 WINGO 30S &amp; 1M LIVE</div>
-                  <div className="sub">100% Same-Side Single Number</div>
+                  <div className="ttl">🐍 100% PYTHON 3 ENGINE</div>
+                  <div className="sub">WinGo 30S &amp; 1M · Same-Side Single No.</div>
                 </div>
                 <span className="set-item-badge on">{gameMode}</span>
               </div>
 
               {(
                 [
-                  { id: 'dashboard', label: '1. Dashboard (Auto Prediction)' },
+                  { id: 'dashboard', label: '1. Dashboard (Python Auto Signal)' },
                   { id: 'engine', label: '2. Engine (Matrix & Core Logics)' },
                   { id: 'my', label: '3. My (Audit & Terminal Console)' },
                 ] as const
@@ -2120,7 +2011,7 @@ export default function App() {
                 }}
               >
                 <span style={{ fontSize: 12, fontWeight: 800 }}>
-                  ✨ Jujutsu AI Support
+                  ✨ Jujutsu Script Support
                 </span>
               </button>
             </div>
@@ -2128,14 +2019,14 @@ export default function App() {
         </div>
       )}
 
-      {/* ==================== SETTINGS MODAL ==================== */}
+      {/* ==================== SETTINGS GLASS MODAL ==================== */}
       {settingsOpen && (
         <div className="overlay" onClick={() => setSettingsOpen(false)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <div className="modal-head">
               <div className="modal-head-title">
                 Jujutsu Script Settings{' '}
-                <span className="modal-head-badge">PRO V3</span>
+                <span className="modal-head-badge">GLASS PRO</span>
               </div>
               <button
                 className="modal-close"
@@ -2156,7 +2047,7 @@ export default function App() {
                     <div className="profile-info">
                       <div className="profile-name-row">
                         <span className="profile-name">JUJUTSU SCRIPT V3</span>
-                        <span className="tag-full">ACTIVE</span>
+                        <span className="tag-full">PYTHON 3</span>
                       </div>
                       <div className="profile-id">
                         POWER BY @AJAYTREDERKING
@@ -2173,13 +2064,13 @@ export default function App() {
                       }}
                     >
                       <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                        <div className="set-item-icon">⚡</div>
+                        <div className="set-item-icon">🐍</div>
                         <div>
                           <div className="set-item-title">
-                            Diablo Ensemble &amp; Core Logics
+                            Python Script Core Logics
                           </div>
                           <div className="set-item-sub">
-                            WinGo 30S &amp; 1M · Same-Side Single Number
+                            100% Unaltered `jujustu_core.py` Execution
                           </div>
                         </div>
                       </div>
@@ -2249,26 +2140,6 @@ export default function App() {
                       </div>
                       <span>→</span>
                     </button>
-
-                    <button
-                      className="set-item highlight"
-                      onClick={() => {
-                        SoundFX.click();
-                        setSettingsOpen(false);
-                        setSupportOpen(true);
-                      }}
-                    >
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                        <div className="set-item-icon solid-blue">🎧</div>
-                        <div>
-                          <div className="set-item-title">Jujutsu AI Support</div>
-                          <div className="set-item-sub">
-                            24/7 Smart Assistant
-                          </div>
-                        </div>
-                      </div>
-                      <span>→</span>
-                    </button>
                   </div>
                 </>
               )}
@@ -2277,7 +2148,7 @@ export default function App() {
                 <>
                   <div className="sub-panel-head">
                     <div className="sub-panel-title">
-                      ⚡ Active Jujutsu V3 Logics
+                      🐍 Active Python Script Logics
                     </div>
                     <button
                       className="modal-close"
@@ -2289,15 +2160,15 @@ export default function App() {
                   <div className="sub-panel-body">
                     {[
                       {
-                        label: 'WinGo 30S & WinGo 1M Dual Live API',
-                        desc: 'Real-time synchronization with both official draw endpoints',
+                        label: '100% Python Script Execution (jujustu_core.py)',
+                        desc: 'Predictions come exclusively from diablo_premium_predictor in Python 3',
                       },
                       {
-                        label: 'Strict Same-Side Single Number Lock',
-                        desc: 'BIG strictly predicts 5–9; SMALL strictly predicts 0–4 (Never opposite)',
+                        label: 'Old Core Logics 1 & 2 Unchanged',
+                        desc: 'master_calculation_prediction (5 methods) + hybrid_prediction',
                       },
                       {
-                        label: 'Diablo Premium Ensemble Predictor',
+                        label: 'Diablo Pattern AI Ensemble Unchanged',
                         desc: 'Momentum (2.5x) + Markov (2.0x) + Freq-Balance (1.5x) + Streak Lock',
                       },
                     ].map((o, idx) => (
@@ -2371,17 +2242,17 @@ export default function App() {
         </div>
       )}
 
-      {/* ==================== AI SUPPORT CHAT MODAL ==================== */}
+      {/* ==================== SUPPORT CHAT GLASS MODAL ==================== */}
       {supportOpen && (
         <div className="overlay" onClick={() => setSupportOpen(false)}>
           <div className="chat-modal" onClick={(e) => e.stopPropagation()}>
             <div className="chat-head">
               <div className="chat-head-left">
-                <div className="chat-ai-icon">🤖</div>
+                <div className="chat-ai-icon">🐍</div>
                 <div>
                   <div className="chat-head-title">
                     JUJUTSU SCRIPT V3 SUPPORT{' '}
-                    <span className="chat-gemini-tag">30S &amp; 1M AI</span>
+                    <span className="chat-gemini-tag">PYTHON 3 CORE</span>
                   </div>
                   <div className="chat-head-sub">
                     POWER BY @AJAYTREDERKING
@@ -2400,7 +2271,7 @@ export default function App() {
                   className={`chat-msg ${m.sender === 'user' ? 'user' : 'ai'}`}
                 >
                   <div className="chat-msg-meta">
-                    {m.sender === 'user' ? 'You' : 'JUJUTSU V3 AI'}
+                    {m.sender === 'user' ? 'You' : 'JUJUTSU PYTHON CORE'}
                     <span className="time">{m.timestamp}</span>
                   </div>
                   <div className="chat-bubble">{m.text}</div>
@@ -2409,7 +2280,7 @@ export default function App() {
               {supportTyping && (
                 <div className="chat-msg ai">
                   <div className="chat-typing">
-                    🔄 Jujutsu AI is generating response...
+                    🔄 Querying Python 3 Engine...
                   </div>
                 </div>
               )}
@@ -2418,9 +2289,9 @@ export default function App() {
             <div className="chat-quick">
               <span className="chat-quick-lbl">Quick:</span>
               {[
-                '30S aur 1M API kaise switch karein?',
+                'Current Python Prediction kya hai?',
                 'Same-Side Single Number rule?',
-                'Current Auto Prediction kya hai?',
+                '30S aur 1M Live API status?',
               ].map((q) => (
                 <button
                   key={q}
@@ -2442,7 +2313,7 @@ export default function App() {
               <input
                 className="chat-input"
                 type="text"
-                placeholder="Ask anything about Jujutsu Script V3..."
+                placeholder="Ask about Jujutsu Python Script..."
                 value={supportInput}
                 onChange={(e) => setSupportInput(e.target.value)}
               />
@@ -2458,7 +2329,7 @@ export default function App() {
         </div>
       )}
 
-      {/* ==================== WIN CELEBRATION OVERLAY ==================== */}
+      {/* ==================== WIN CELEBRATION GLASS OVERLAY ==================== */}
       {winData && (
         <div className="overlay" onClick={() => setWinData(null)}>
           <div className="win-overlay" onClick={(e) => e.stopPropagation()}>
@@ -2469,10 +2340,10 @@ export default function App() {
               <span className="win-pill">🏆 JUJUTSU SCRIPT VICTORY</span>
               <div className="win-icon">🏆</div>
               <span className="win-period">PERIOD {winData.roundId}</span>
-              <h3 className="win-title">Prediction Hit!</h3>
+              <h3 className="win-title">Python Prediction Hit!</h3>
               <div className="win-details">
                 <div className="win-detail-row">
-                  <span className="l">Predicted Target:</span>
+                  <span className="l">Python Signal:</span>
                   <span className="r">{winData.targetValue}</span>
                 </div>
                 <div className="win-detail-row">
